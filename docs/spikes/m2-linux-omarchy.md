@@ -105,3 +105,13 @@ The run-harnesses display mode stays guarded on purpose. For option A the owner 
 - Scripts: `crates/yaac-app/scripts/bundle-linux.sh`, `crates/yaac-app/scripts/run-harnesses.sh`.
 - Package: `packaging/arch/{PKGBUILD,yaac.desktop,yaac.svg}` (the SVG is a placeholder icon).
 - No public signature in `yaac-core`, `yaac-engine` or `yaac-api` changed.
+
+## Remaining after the review (not done, in priority order)
+
+- **Privacy blocker for a release build (item 8).** The release store is still the default. Required: pass `--password-store=gnome-libsecret` explicitly in release builds and log the store in use. Until then a release on a desktop Chromium does not recognise can fall back to the basic store (fixed key, `v10`). `cookie-store-check.sh` exists; the owner runs it after a release run (`v11` expected).
+- **Item 4:** the Ozone choice is still in `yaac-cef`; the move to a pure function in `yaac-platform` is not done.
+- **Item 5:** app id (`linux_window_properties`, `yaac`) and `StartupWMClass=yaac` are not done. The desktop file still says `cef`.
+- **Item 6:** PKGBUILD: `xdg-desktop-portal` to `optdepends`, licence files to `/usr/share/licenses/yaac/`, the libEGL/libGLESv2 claim checked with `pacman -Qo`, and an unprivileged `makepkg` test with `bsdtar -tvf` are not done. Only the build directory moved to `target/bundle-pkg`.
+- **Item 9 (review questions):** Q2 to Q6 are not answered by observation yet.
+- **Live check:** `live-session-check.sh` was tested only by its dry run and by its refusal outside a session. It has not run in a Wayland session.
+- **Linux suites:** the headless suites were re-run after the runner and platform changes only if the run recorded in the commit log says so; check the latest run before relying on it.
