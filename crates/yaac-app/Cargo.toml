@@ -1,0 +1,15 @@
+[package]
+name = "yaac-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+yaac-core.workspace = true
+yaac-store.workspace = true
+yaac-engine.workspace = true
+yaac-platform.workspace = true
+yaac-cef = { path = "../yaac-cef" }
+tokio.workspace = true

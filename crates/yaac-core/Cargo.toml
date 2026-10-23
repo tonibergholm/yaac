@@ -1,0 +1,23 @@
+[package]
+name = "yaac-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[features]
+# FakeStore and the Store conformance suite, for yaac-store and for downstream tests.
+testing = []
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+yaac-model.workspace = true
+yaac-api.workspace = true
+yaac-engine.workspace = true
+
+[dev-dependencies]
+yaac-engine = { workspace = true }

@@ -1,0 +1,11 @@
+[package]
+name = "yaac-cef"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+yaac-model.workspace = true
+yaac-engine.workspace = true

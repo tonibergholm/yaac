@@ -1,0 +1,11 @@
+[package]
+name = "yaac-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+yaac-model.workspace = true
