@@ -12,6 +12,12 @@ mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{MacPlatform, activate_app, install_app_menu, paths_from};
 
+#[cfg(target_os = "linux")]
+mod linux;
+
+#[cfg(target_os = "linux")]
+pub use linux::{LinuxEnv, LinuxPlatform, activate_app, install_app_menu, paths_from};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppPaths {
     pub config: PathBuf,
