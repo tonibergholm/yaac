@@ -23,6 +23,9 @@ pub enum StoreOp {
     DeleteContainer(ContainerId),
     UpsertSession(SessionState),
     DeleteSession(WindowId),
+    /// The revision after the change this batch records. Every batch that bumps the revision
+    /// carries it, so the revision survives a restart.
+    SetRev(u64),
 }
 
 /// The persistence port. Runs on the store thread; calls are synchronous.
