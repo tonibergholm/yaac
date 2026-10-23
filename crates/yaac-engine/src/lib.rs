@@ -98,6 +98,18 @@ pub enum EngineEvent {
     WindowClosed {
         window: WindowId,
     },
+    /// The window has started closing (the user closed it, or the app is quitting). Sent before any
+    /// `Closed` event of its views. The core stops issuing commands for the window and does not
+    /// recreate its sidebar.
+    WindowClosing {
+        window: WindowId,
+    },
+    /// A `CreateView` could not be completed (the profile never became ready, or CEF refused). The
+    /// view does not exist. The core marks the node not live; for the sidebar it retries a bounded
+    /// number of times.
+    CreateFailed {
+        view: ViewId,
+    },
 }
 
 /// Cheap to clone, `Send + Sync`. Implementations post work to the engine's UI thread.

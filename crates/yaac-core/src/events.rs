@@ -32,6 +32,8 @@ pub(crate) fn on_engine_event(state: &State, event: EngineEvent) -> Step {
         } => popup(state, opener, url, user_gesture),
         EngineEvent::WindowClosed { window } if window == state.window => Step::Stop,
         EngineEvent::WindowClosed { .. } => Step::Ignore,
+        // Handled by the core fix branch (`m1/fix-core`).
+        EngineEvent::WindowClosing { .. } | EngineEvent::CreateFailed { .. } => Step::Ignore,
     }
 }
 
