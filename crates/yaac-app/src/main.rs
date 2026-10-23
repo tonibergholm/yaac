@@ -88,6 +88,9 @@ impl Mode {
                 "--persist-write" => Mode::PersistWrite,
                 #[cfg(yaac_dev)]
                 "--persist-verify" => Mode::PersistVerify,
+                // Development runs only: CEF reads this from the process arguments, which picks the
+                // Ozone platform (for example `headless`, which needs no compositor).
+                other if cfg!(yaac_dev) && other.starts_with("--ozone-platform=") => mode,
                 other => return Err(format!("unknown argument {other}")),
             };
         }
