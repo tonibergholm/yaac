@@ -31,11 +31,14 @@ profile=${PROFILE:-debug}
 cd "$crate"
 if [ "$profile" = release ]; then
     # The release binary embeds ui/dist, so the UI is built first. A failed UI build stops the bundle.
-    (cd "$root/ui" && pnpm install --frozen-lockfile && pnpm build)
-    cargo build --release -p yaac-app --bin yaac-app
+    # YAAC_BUNDLE_NO_UI=1: the caller already built ui/dist (the Arch package builds it in build()).
+    if [ "${YAAC_BUNDLE_NO_UI:-0}" != 1 ]; then
+        (cd "$root/ui" && pnpm install --frozen-lockfile && pnpm build)
+    fi
+    cargo build --release --locked -p yaac-app --bin yaac-app
     bin=$root/target/release/yaac-app
 else
-    cargo build -p yaac-app --bin yaac-app
+    cargo build --locked -p yaac-app --bin yaac-app
     bin=$root/target/debug/yaac-app
 fi
 

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=yaac
+GenericName=Web Browser
+Comment=Arc-like browser: Chromium through CEF, Rust core, web UI (development build)
+Exec=yaac-app
+Icon=yaac
+Terminal=false
+Categories=Network;WebBrowser;
+StartupWMClass=cef
