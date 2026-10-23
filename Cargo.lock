@@ -892,6 +892,7 @@ name = "yaac-store"
 version = "0.0.0"
 dependencies = [
  "rusqlite",
+ "serde",
  "thiserror",
  "yaac-core",
  "yaac-model",
