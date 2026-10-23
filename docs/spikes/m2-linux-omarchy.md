@@ -114,4 +114,4 @@ The run-harnesses display mode stays guarded on purpose. For option A the owner 
 - **Item 6:** PKGBUILD: `xdg-desktop-portal` to `optdepends`, licence files to `/usr/share/licenses/yaac/`, the libEGL/libGLESv2 claim checked with `pacman -Qo`, and an unprivileged `makepkg` test with `bsdtar -tvf` are not done. Only the build directory moved to `target/bundle-pkg`.
 - **Item 9 (review questions):** Q2 to Q6 are not answered by observation yet.
 - **Live check:** `live-session-check.sh` was tested only by its dry run and by its refusal outside a session. It has not run in a Wayland session.
-- **Linux suites:** the headless suites were re-run after the runner and platform changes only if the run recorded in the commit log says so; check the latest run before relying on it.
+- **Linux suites:** the headless suite with `ui/dist` passes every stage at `0be831d` (after the runner and platform changes). The run without `ui/dist` was not repeated in this time-box. The macOS suite passes at `668c951` (its runner state, before the doc-only commits): all stages ok, self-test exit 1, persistence ok.
