@@ -155,6 +155,8 @@ pub enum ErrorCode {
     Forbidden,
     Conflict,
     UnsupportedVersion,
+    /// The core is starting or has stopped. Transient: the client retries.
+    Unavailable,
     Internal,
 }
 

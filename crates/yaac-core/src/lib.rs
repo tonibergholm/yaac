@@ -142,7 +142,7 @@ fn stopped(id: u64) -> Response {
         id,
         result: ApiResult::Err {
             error: ApiError {
-                code: ErrorCode::Internal,
+                code: ErrorCode::Unavailable,
                 message: "the core has stopped".to_owned(),
             },
         },

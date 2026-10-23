@@ -107,7 +107,7 @@ impl yaac_cef::RpcHandler for CoreRpc {
             };
             match core {
                 // Retriable: the UI retries its snapshot pull with backoff.
-                None => refuse(ErrorCode::Internal, "the core is starting; retry"),
+                None => refuse(ErrorCode::Unavailable, "the core is starting; retry"),
                 Some(_) if !caller.main_frame => refuse(
                     ErrorCode::Forbidden,
                     "only the main frame may call the core",

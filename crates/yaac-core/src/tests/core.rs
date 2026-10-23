@@ -1357,7 +1357,7 @@ async fn shutdown_flushes_pending_writes_stops_the_core_and_is_idempotent() {
         .await;
     assert!(matches!(
         response.result,
-        ApiResult::Err { error } if error.code == ErrorCode::Internal
+        ApiResult::Err { error } if error.code == ErrorCode::Unavailable
     ));
 }
 
@@ -1380,7 +1380,7 @@ async fn closing_the_window_stops_the_actor() {
         .await;
     assert!(matches!(
         response.result,
-        ApiResult::Err { error } if error.code == ErrorCode::Internal
+        ApiResult::Err { error } if error.code == ErrorCode::Unavailable
     ));
 }
 
@@ -1506,7 +1506,7 @@ async fn quitting_a_window_recreates_nothing_and_flushes_the_store() {
         .await;
     assert!(matches!(
         response.result,
-        ApiResult::Err { error } if error.code == ErrorCode::Internal
+        ApiResult::Err { error } if error.code == ErrorCode::Unavailable
     ));
 
     assert!(

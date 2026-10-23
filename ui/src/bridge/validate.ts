@@ -9,7 +9,7 @@ type Obj = Record<string, unknown>;
 
 const NODE_KINDS = ['tab', 'folder', 'split'] as const;
 const CONTAINER_KINDS = ['favorites', 'pinned', 'today', 'archive'] as const;
-const ERROR_CODES = ['bad_request', 'not_found', 'forbidden', 'conflict', 'unsupported_version', 'internal'] as const;
+const ERROR_CODES = ['bad_request', 'not_found', 'forbidden', 'conflict', 'unsupported_version', 'unavailable', 'internal'] as const;
 
 function isObj(value: unknown): value is Obj {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
