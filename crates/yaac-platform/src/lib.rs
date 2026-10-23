@@ -6,6 +6,8 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+pub mod ozone;
+
 #[cfg(target_os = "macos")]
 mod macos;
 
