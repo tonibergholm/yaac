@@ -57,11 +57,13 @@ describe('core round trip with MockBridge', () => {
 });
 
 describe('drops from outside the page', () => {
-  it('cancels every drop, so the page cannot navigate; dragover is left to the valid targets', async () => {
+  it('refuses a foreign drag at dragover and drop, so the page cannot navigate', async () => {
     await mountMock();
-    // Not accepted here, so the browser shows the "not allowed" cursor.
-    expect(fireEvent.dragOver(document.body)).toBe(true);
+    const before = window.location.href;
+    // A drag without the sidebar's MIME type is foreign. It is cancelled, so no drop is accepted.
+    expect(fireEvent.dragOver(document.body)).toBe(false);
     expect(fireEvent.drop(document.body)).toBe(false);
+    expect(window.location.href).toBe(before);
   });
 });
 
