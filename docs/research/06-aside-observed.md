@@ -2,12 +2,13 @@
 
 Date: 2026-10-23. Branch: `aside-analysis-2`. Status: the CLI command tree, the MCP tool list, the snapshot format and sizes, the daemon transport, and the REPL action surface are settled. Permissions for MCP and CLI calls are partly settled (no Deny rule was tested). The approval indicator and the kill switch are not settled. Run 1 (no CLI) is superseded where noted.
 
-Scope rules followed: clean room. No disassembly or decompilation. No copy of Aside's code, prompts, models, or assets into the repo. Aside's tool descriptions and REPL guide were read at runtime and are not reproduced here; the raw captures keep names, parameter shapes, and runtime output only. No read of any file under `~/.aside/` (the CLI reads its own state; this run did not open any file there). No `aside exec`, no `aside memory`, no login, logout, or update. I did not read or list any user tab or window. The CLI's `account status` printed the profile label. The tests ran in the user's only profile, so the public pages I loaded may have left history and cookie entries there (INFERRED). The accidental agent run (section 0) is a further side effect. Test pages: local `127.0.0.1:8765` (served from `/tmp`, stopped at the end), `https://example.com/`, the Wikipedia article "Web browser", and `https://github.com/tonibergholm/yaac`.
+Scope rules followed: clean room. No disassembly or decompilation. No copy of Aside's code, prompts, models, or assets into the repo. Aside's tool descriptions and REPL guide were read at runtime and are not reproduced here; the raw captures keep names, parameter shapes, and runtime output only. No read of any file under `~/.aside/` (the CLI reads its own state; this run did not open any file there). No intentional `aside exec` or `aside <prompt>`; one accidental prompt run, see section 0. No `aside memory`, no login, logout, or update. I did not read or list any user tab or window. The CLI's `account status` printed the profile label. The tests ran in the user's only profile, so the public pages I loaded may have left history and cookie entries there (INFERRED). The accidental agent run (section 0) is a further side effect. Test pages: local `127.0.0.1:8765` (served from `/tmp`, stopped at the end), `https://example.com/`, the Wikipedia article "Web browser", and `https://github.com/tonibergholm/yaac`.
 
 Labels: VERIFIED = observed in this run. VERIFIED (run 1) = observed in run 1 and not re-checked. INFERRED = a reasoned conclusion from VERIFIED facts. DOC = from note 05 (Aside's public docs), not re-checked. UNKNOWN = not determined.
 
 Raw captures (small text files): `docs/research/06-aside-observed/`
 - `cli-help.txt`: help output of the root and each group command. Leaf `--help` is covered in section 2.
+- `cli-exit-codes.txt`: exit codes and output shape for the safe invocations.
 - `mcp-initialize.json`, `mcp-tools-list.json` (prose removed, names and schemas kept), `mcp-resources-prompts-errors.json`.
 - `repl-probe-transcript.txt`: step-by-step REPL calls and their outputs (Aside runtime warnings removed).
 - `snapshot-sizes.txt`: size table and the cap marker.
@@ -19,13 +20,15 @@ Raw captures (small text files): `docs/research/06-aside-observed/`
 - The CLI is `/Users/tonibergholm/.local/bin/aside`, version 1.26.1023.1115. It is on PATH. The CLI is signed in as the user's account (`account status`, provider google, one profile). VERIFIED.
 - `aside mcp` is a stdio MCP server, `serverInfo` name `aside`, protocol 2025-06-18. It exposes four tools: `repl`, `exec`, `browser_profiles`, and `memory_search`. The `--help` text lists only three, because it omits `memory_search`. No tool has annotations. VERIFIED.
 - The CLI talks to the daemon over loopback TCP `127.0.0.1:21420`, the same port the browser's network helper uses. The daemon answers `GET /` and `GET /health` with a 231-byte status document and no credentials. Requests with a foreign `Origin` or `Host` get 403. VERIFIED.
-- The snapshot is a YAML-like accessibility tree with `[ref=eN]` tokens. A repeat call returns a unified-style diff. A hard cap of 16 KiB per snapshot applies (not paginated). example.com (577 bytes of HTML) becomes a 270-byte tree. Wikipedia and a 492 KB list page are both cut at 16 KiB. VERIFIED.
+- The snapshot is a YAML-like accessibility tree with `[ref=eN]` tokens. A call returns a unified-style diff against the immediately preceding snapshot call on the same page. After a call with different options it returns the full tree. A hard cap of 16 KiB per snapshot applies (not paginated). example.com (577 bytes of HTML) becomes a 270-byte tree. Wikipedia and a 492 KB list page are both cut at 16 KiB. VERIFIED.
 - The REPL performed fill, click, keyboard input, a download, navigation, evaluate, and screenshots on test pages without any approval prompt or permission error. The `repl` tool has no permission parameter. VERIFIED. Whether tool rules or the Guard setting apply to `repl` calls: UNKNOWN (no Deny rule was tested).
 - Two Aside CLI defects were observed: an unknown word is treated as a paid agent prompt, and a failed REPL script exits with status 0. VERIFIED. One accidental agent session was created and deleted (section 0).
 
 ## 0. Incidents, limits, and what was not done
 
 Incident (my error, this run): `aside bogus-cmd` was run to test the exit code of an unknown command. The root command treats unknown words as a prompt (usage `aside [options] [prompt...]`), so this started an agent run. It created one ephemeral session titled "Investigating bogus-cmd failure". The session was idle. I ran `aside session stop` (it printed `idle`, exit 0) and `aside session delete` (it printed `ok`, exit 0). After that, `aside session list` showed only the session from the MCP test. The session got a generated title, so a model call probably ran (INFERRED), and credit use is likely. It ran with the default permission (Guard; the help says Guard is the default). UNKNOWN: whether it opened a tab in the user's browser. Checking that would have meant listing tabs or reading session transcripts, which the rules forbid. The user should check Aside's usage history for that time, 2026-10-23 07:26 UTC.
+
+Side effect (my test): the download test saved `probe.txt` (29 bytes) to `~/Downloads`. I compared it with my test string, which matched, and removed it. Aside's download history in Profile 0 probably holds an entry (INFERRED).
 
 Other limits:
 - The window-level indicator screenshot could not be taken. System Events sees one Aside window, but the CoreGraphics window list returned no Aside windows, so there was no window ID for `screencapture -l`. A region capture would have included the user's other tabs. Blocked; see section 5.
@@ -52,19 +55,19 @@ Root: `aside [options] [prompt...]`. A positional prompt starts an agent run (no
 
 | Command | Purpose (help text) | Options | Run in this session |
 |---|---|---|---|
-| `account list`, `account status [id]`, `account use <id>` | list and switch CLI accounts | -h only | `list`, `status` (exit 0; shows the signed-in account and its profile label) |
+| `account list`, `account status [id]`, `account use <id>` | list and switch CLI accounts | leaf options not captured (leaf --help printed root help) | `list`, `status` (exit 0; shows the signed-in account and its profile label) |
 | `login` | sign the CLI in with a code approved in Settings | `--account`, `--email`, `--password`, `--device-code` (default) | not run |
 | `logout` | sign out and revoke CLI credentials | -h only | not run |
 | `host list`, `host status`, `host use <host>`, `host profiles` | session hosts (Remote Control or cloud) | `profiles` takes options | `status` printed `local` (exit 0). `list` printed a line ending in `: 403` (exit 1). `profiles` not run (profile state). |
-| `memory search/list/show/path` | read-only memory | -h only | not run (personal data); help only |
-| `skills list`, `skills show <name>`, `skills install` | site skills for `repl`; install writes into coding-agent config | -h only | `list` ran: 13 tab-separated lines (name, description) (exit 0) |
+| `memory search/list/show/path` | read-only memory | leaf options not captured (leaf --help printed root help) | not run (personal data); help only |
+| `skills list`, `skills show <name>`, `skills install` | site skills for `repl`; install writes into coding-agent config | leaf options not captured (leaf --help printed root help) | `list` ran: 13 tab-separated lines (name, description) (exit 0) |
 | `exec [prompt...]` | run the browser agent | the root options | not run |
 | `repl [code...]` | Playwright-style JavaScript, 120 s timeout | `--account`, `--host`, `--profile` | one-shot `console.log(1+1)` printed `2` and `[ok | 10ms]`, exit 0. A JS syntax error printed `[error | ...]`, exit 0. |
 | `mcp` | MCP server over stdio | `--account`, `--host`, `--profile` | run as the MCP server (section 3). Stdin end gives a shutdown event with reason `stdin-end` and exit 0. |
-| `guide [topic]` | usage guide; topic `repl` | -h only | `guide` and `guide repl` are not copied (Aside prose) |
+| `guide [topic]` | usage guide; topic `repl` | -h only; topic `repl` | `guide` and `guide repl` are not copied (Aside prose) |
 | `update` | check and install the newest release | -h only | not run |
-| `session list/resume/stop/steer/queue/archive/delete` | agent sessions | -h only | `list` ran. `stop` and `delete` ran on the accidental session only. `stop` on an idle session printed `idle` (exit 0). |
-| `settings get`, `settings save-sessions <bool>`, `settings set-default-profile <id>` | CLI settings | -h only | not run |
+| `session list/resume/stop/steer/queue/archive/delete` | agent sessions | leaf options not captured (leaf --help printed root help) | `list` ran. `stop` and `delete` ran on the accidental session only. `stop` on an idle session printed `idle` (exit 0). |
+| `settings get`, `settings save-sessions <bool>`, `settings set-default-profile <id>` | CLI settings | leaf options not captured (leaf --help printed root help) | not run |
 
 Exit codes observed:
 - `--bogus-flag`: 1.
@@ -129,25 +132,25 @@ Kill switch: UNKNOWN. The `session stop` command stops agent sessions; whether i
 
 Format (VERIFIED). The default snapshot is an indented accessibility tree, one node per line:
 - The first line is `- title: "..." [url=...]`. Then roles and names, for example `- textbox "Name" [ref=e1] [placeholder="Your name"]: "Probe Name"`, `- checkbox "Agree" [ref=e3] [checked] [focused]`, `- button "Send" [ref=e4]`, `- heading "..." [level=1]`, `- text: "..."`, `- link "..." [ref=e5]`.
-- `interactive: true` keeps the interactive nodes plus some structure and text (headings and text nodes stayed in the output), with a `# note:` header line. It was not smaller on the pages measured: example.com 329 bytes against 270 for the full tree. Wikipedia and the list page were capped at about 16 KiB either way.
+- `interactive: true` keeps the interactive nodes plus some structure and text (headings and text nodes stayed in the output), with a `# note:` header line. On GitHub it was 19% smaller (5,351 against 6,595 bytes). On example.com it was larger (329 against 270). Wikipedia and the list page were both capped at about 16 KiB either way.
 - Refs are `eN` (for example `e12`). The runtime REPL guide says each new snapshot invalidates earlier refs (read at runtime, not re-checked). Not tested here: whether a ref survives a later snapshot of an unchanged page.
-- A call returns `diff` against the previous snapshot of the same mode: unified-style hunks `@@ -4 +4 @@` with `-`/`+` lines. In a select test with two full snapshots, changing one option produced a 9-line diff (three hunks) instead of the tree. After an interactive snapshot, a full snapshot returned the whole tree as its diff (step 003), so the diff baseline is per mode.
+- A call returns `diff` against the immediately preceding snapshot call on the same page: unified-style hunks `@@ -4 +4 @@` with `-`/`+` lines. In a select test with two full snapshots, changing one option produced a 9-line diff (three hunks) instead of the tree. After an interactive snapshot, a full snapshot returned the whole tree as its diff (step 003), so a call after a different-option call returns the full tree.
 - Errors: an unknown ref (`e999`) and a stale ref both return `RefStaleError: Ref "eN" is stale ... Take a new snapshot and retry`. The two cases are not distinguished. VERIFIED.
 
 Size cap (VERIFIED): each snapshot is capped at 16 KiB. When the cap applies, the tree ends with `... [snapshot truncated at 16 KiB; narrow it with { interactive: true }, selector or ref]`. There is no pagination and no continuation token. The `interactive` option did not avoid the cap on the two large pages (Wikipedia, and a 492 KB list page). The `selector` option does narrow the scope (one list item was 268 bytes). The `ref` scope was not tested.
 
 Measured sizes (bytes are UTF-8 byte counts of the tree string; tokens estimated as bytes / 4; full table in `snapshot-sizes.txt`):
 
-| Page | Raw HTML (run 1) | Snapshot (tree) | Interactive | PNG screenshot | Tree / raw | Est. tokens (tree) |
+| Page | Raw HTML (run 1 unless noted) | Snapshot (tree) | Interactive | PNG screenshot | Tree / raw | Est. tokens (tree) |
 |---|---|---|---|---|---|---|
 | example.com | 577 | 270 (3 lines) | 329 | 199,568 | 47% | ~68 |
 | Wikipedia, Web browser | 415,391 | 16,469, capped | 16,466, capped | 845,839 | 4.0% | ~4,117 |
 | github.com/tonibergholm/yaac | 245,228 | 6,595 (151 newlines) | 5,351 | 396,659 | 2.7% | ~1,649 |
-| local list page (4,000 items) | 492,816 | 16,465, capped | 16,453, capped | not measured | 3.3% | ~4,116 |
+| local list page (4,000 items; raw size of the file served in this run) | 492,816 | 16,465, capped | 16,453, capped | not measured | 3.3% | ~4,116 |
 
 - The local form page's whole snapshot result, including the open-tab line, was 542 bytes.
 - The image path: `display(png)` re-encodes to JPEG, resized to 2000 px wide (a 2880 x 1800 page became 2000 x 1250, 112,872 base64 characters, about 84.6 KB). The annotated screenshot of the same page was 73,768 base64 characters. An image costs about 3,333 tokens at the usual (w x h) / 750 approximation. INFERRED (not measured).
-- So for text-heavy pages the tree is 1 to 4 thousand tokens, against a screenshot of about 3 thousand tokens and raw HTML of 61 to 104 thousand tokens for the three run-1 baselines. The 16 KiB cap is the main reason the cost stays bounded.
+- So for text-heavy pages the tree is 1 to 4 thousand tokens, against a screenshot of about 3 thousand tokens. Raw HTML for the two text-heavy run-1 baselines is about 61 thousand tokens (GitHub) and 104 thousand (Wikipedia). example.com is about 68 tokens for its tree and about 144 for its raw HTML. The 16 KiB cap is the main reason the cost stays bounded.
 
 Not verified: `page.content()` and `page.evaluate()` costs (the REPL guide says to avoid them for reading; not measured).
 
@@ -163,7 +166,7 @@ All of these ran on test pages in the signed-in profile:
 - `page.goto(url)`, `page.goBack()`, `page.url()`: worked.
 - `page.screenshot()`, `annotatedScreenshot(page)`, `display(buffer)`: worked.
 - `closeTab(tab)`: closed a tab and updated `tabs`. Closing all seven of my tabs worked.
-- Download location: `download.path()` was not recorded (not checked). The REPL guide says `fs` cannot browse the real Downloads folder.
+- The download saved `probe.txt` (29 bytes) to the user's `~/Downloads`. It was my file (same size and content as my test string), and I removed it (section 0). Aside's download history in Profile 0 probably holds an entry (INFERRED).
 
 Behaviour notes:
 - The REPL keeps one scope per MCP process. A redeclared `let` fails with `Identifier 'x' has already been declared`. VERIFIED.
@@ -186,10 +189,10 @@ The guide forbids `page.context().newPage()` and `page.close()`, and says to use
 
 Token-efficient parts, and why they work:
 - Refs (`eN`) replace CSS selectors in every action. They are short and stable within one snapshot.
-- Diff after an action returns only the changed lines.
+- Diff after an action returns only the changed lines when the preceding snapshot call used the same options (step 009). After a call with different options the full tree came back (step 003).
 - The tree omits layout, styling, and markup. It keeps roles, names, values, and states.
 - The 16 KiB cap bounds each read.
-- `interactive` and `selector` narrow the read.
+- `selector` narrows the read (268 bytes for one list item). `interactive` cut GitHub by 19% and did not help the other pages. `ref` was not tested.
 - Images are resized before display.
 
 ## 9. Settles and still unknown (against note 05)
@@ -230,7 +233,7 @@ Tool set
 - Tool schema cost: Aside's 4-tool schema is about 8.8 KB with prose, of which most is the code tool's description. INFERRED: keep descriptions short and factual; do not put policy prose into tool descriptions (the core enforces policy).
 
 Snapshot format
-- Copy: the indented accessibility tree with short refs; the `interactive` filter; the `selector` and `ref` scopes; the diff after actions. VERIFIED that these cut cost (section 6).
+- Copy: the indented accessibility tree with short refs, the `selector` scope (VERIFIED to narrow the read), and the diff after actions (VERIFIED when the preceding snapshot used the same options). Treat the `interactive` filter as a modest size control: 19% smaller on GitHub, larger on example.com, no change on the capped pages (VERIFIED). `ref` scope: not tested (section 6).
 - Change: put an explicit continuation or truncation field in the result instead of a hard text marker. Aside cuts at 16 KiB with no way to page. INFERRED: yaac should return `truncated: true` with a `next` cursor or a suggested narrower scope.
 - Change: distinguish "ref not found" from "ref stale". Aside returns `RefStaleError` for both. VERIFIED.
 - Keep the 16 KiB default (or a similar bound). It makes a read cost 1 to 4 thousand tokens on text-heavy pages.

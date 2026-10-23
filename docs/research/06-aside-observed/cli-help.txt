@@ -56,9 +56,6 @@ Model options:
   --permission ask and --permission guard are the same (Guard). Omit for Guard.
 
 
-  aside repl "const page = await openTab('https://example.com'); console.log(await page.title())"
-  aside mcp
-  aside update
 exit=0
 
 === aside account --help
@@ -203,6 +200,7 @@ Notes:
 
 
 === aside mcp --help
+# Tool names listed by the mcp help (descriptions omitted): exec, repl, browser_profiles. tools/list also returns memory_search (see mcp-tools-list.json).
 Usage: aside mcp [options]
 
 Start the MCP server over stdio.

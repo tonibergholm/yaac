@@ -1,3 +1,4 @@
+# Step 010 note: the download was saved to ~/Downloads (checked after the run with ls and cmp against the test string, one name only; the file was removed).
 # REPL probe transcript (MCP repl tool, local and public test pages only). Aside prompt text and system warnings omitted.
 
 ## step 001: open local form page and default snapshot
@@ -199,7 +200,7 @@ code: const bigTab = await openTab('http://127.0.0.1:8765/big.html'); const bgFu
 <Aside runtime warning, omitted>
 
 ✔︎ Opened a new tab and set it active: tabs[5], page → Aside probe big list (http://127.0.0.1:8765/big.html)
-STATS {"fullBytes":16465 (fullTail removed from capture), "interactiveBytes":16453, "selBytes":268,
+STATS {"fullBytes":16465 (fullTail removed from capture), [added from snapshot-sizes.txt: "interactiveBytes":16453, "selBytes":268],
 
 ## step 020: selector scope on Wikipedia
 isError=False blocks=['text']
