@@ -3,9 +3,7 @@
 //! transaction's ops, so a failed commit leaves the state and the engine untouched.
 
 use crate::StoreOp;
-use crate::error::{
-    bad_request, internal, not_found, position as position_error, tree as tree_error,
-};
+use crate::error::{bad_request, internal, not_found, tree as tree_error};
 use crate::navigation::NavTrack;
 use crate::urls::{self, SIDEBAR_URL};
 use std::collections::{BTreeMap, BTreeSet};
@@ -544,23 +542,11 @@ impl Tx {
     }
 
     fn renumber(&mut self, container: ContainerId, parent: Option<NodeId>) -> Result<(), ApiError> {
-        let ids: Vec<NodeId> = self
-            .state
-            .ws
-            .tree
-            .children(container, parent)
-            .iter()
-            .map(|node| node.id)
-            .collect();
-        let mut previous: Option<Position> = None;
-        for id in ids {
-            let position = match &previous {
-                None => Position::first(),
-                Some(last) => Position::between(Some(last), None).map_err(position_error)?,
-            };
-            self.move_node(id, container, parent, position.clone())?;
-            previous = Some(position);
+        let changed = self.state.ws.tree.renumber_children(container, parent);
+        for id in changed {
+            self.persist_node(id)?;
         }
+        self.tree_changed = true;
         Ok(())
     }
 

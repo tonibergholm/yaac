@@ -201,7 +201,6 @@ fn every_command(node: NodeId, space: SpaceId) -> Vec<Command> {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn bootstrap_sequence_and_persistence() {
     let rig = Rig::empty();
     let snapshot = rig.snapshot().await;
@@ -273,7 +272,6 @@ async fn bootstrap_sequence_and_persistence() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn restore_suspends_every_tab_and_loads_only_the_selected_one() {
     let (ws, one, two, three, space) = stored_workspace("https://two.example");
     let rig = Rig::start(FakeStore::with_workspace(ws));
@@ -313,7 +311,6 @@ async fn restore_suspends_every_tab_and_loads_only_the_selected_one() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn restore_replaces_an_unloadable_url_with_about_blank_and_keeps_the_stored_value() {
     let (ws, _, two, _, _) = stored_workspace("javascript:alert(1)");
     let rig = Rig::start(FakeStore::with_workspace(ws));
@@ -331,7 +328,6 @@ async fn restore_replaces_an_unloadable_url_with_about_blank_and_keeps_the_store
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn open_select_and_close_issue_the_full_engine_sequence() {
     let rig = Rig::empty();
     let first = all_nodes(&rig.snapshot().await)[0].id;
@@ -381,7 +377,6 @@ async fn open_select_and_close_issue_the_full_engine_sequence() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn closing_the_last_tab_opens_a_new_blank_tab() {
     let rig = Rig::empty();
     let only = all_nodes(&rig.snapshot().await)[0].id;
@@ -413,7 +408,6 @@ async fn closing_the_last_tab_opens_a_new_blank_tab() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn closing_the_selected_tab_selects_the_previous_sibling_when_there_is_no_next() {
     let rig = Rig::empty();
     let space = space_of(&rig.snapshot().await);
@@ -452,7 +446,6 @@ async fn closing_the_selected_tab_selects_the_previous_sibling_when_there_is_no_
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn closing_a_selected_tab_falls_back_to_another_tab_of_the_space() {
     let rig = Rig::empty();
     let space = space_of(&rig.snapshot().await);
@@ -495,7 +488,6 @@ async fn closing_a_selected_tab_falls_back_to_another_tab_of_the_space() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn closing_a_folder_with_children_is_a_conflict_and_an_empty_one_is_deleted() {
     let rig = Rig::empty();
     let space = space_of(&rig.snapshot().await);
@@ -536,7 +528,6 @@ async fn closing_a_folder_with_children_is_a_conflict_and_an_empty_one_is_delete
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn moving_a_folder_across_containers_rewrites_its_children() {
     let rig = Rig::empty();
     let space = space_of(&rig.snapshot().await);
@@ -590,7 +581,6 @@ async fn moving_a_folder_across_containers_rewrites_its_children() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn moving_a_tab_to_another_profile_is_a_conflict() {
     let mut ws = Workspace::default();
     let default = stored_profile(&mut ws, ProfileKind::Default, "Default");
@@ -623,7 +613,6 @@ async fn moving_a_tab_to_another_profile_is_a_conflict() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn moving_a_folder_into_its_own_subtree_is_a_conflict() {
     let rig = Rig::empty();
     let space = space_of(&rig.snapshot().await);
@@ -661,7 +650,6 @@ async fn moving_a_folder_into_its_own_subtree_is_a_conflict() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn moving_the_selected_tab_into_another_space_switches_the_active_space() {
     let rig = Rig::empty();
     let home = space_of(&rig.snapshot().await);
@@ -714,7 +702,6 @@ async fn moving_the_selected_tab_into_another_space_switches_the_active_space() 
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn moving_the_selected_tab_to_the_archive_selects_another_tab() {
     let rig = Rig::empty();
     let space = space_of(&rig.snapshot().await);
@@ -756,7 +743,6 @@ async fn moving_the_selected_tab_to_the_archive_selects_another_tab() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn select_space_restores_the_last_selected_tab_or_opens_a_blank_one() {
     let rig = Rig::empty();
     let home = space_of(&rig.snapshot().await);
@@ -800,7 +786,6 @@ async fn select_space_restores_the_last_selected_tab_or_opens_a_blank_one() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn stale_navigation_callback_is_dropped() {
     let rig = Rig::empty();
     let view = last_content_view(&rig.startup).expect("the first tab has a view");
@@ -824,7 +809,6 @@ async fn stale_navigation_callback_is_dropped() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn title_and_url_move_together_across_navigations() {
     let rig = Rig::empty();
     let view = last_content_view(&rig.startup).expect("the first tab has a view");
@@ -875,7 +859,6 @@ async fn title_and_url_move_together_across_navigations() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn crashed_view_turns_the_node_not_live_and_bumps_the_revision() {
     let rig = Rig::empty();
     let view = last_content_view(&rig.startup).expect("the tab has a view");
@@ -892,7 +875,6 @@ async fn crashed_view_turns_the_node_not_live_and_bumps_the_revision() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn a_store_failure_while_handling_an_engine_event_leaves_the_state_consistent() {
     let rig = Rig::empty();
     let view = last_content_view(&rig.startup).expect("the tab has a view");
@@ -912,7 +894,6 @@ async fn a_store_failure_while_handling_an_engine_event_leaves_the_state_consist
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn a_store_failure_leaves_the_state_and_the_engine_untouched() {
     let rig = Rig::empty();
     rig.engine.take_commands();
@@ -940,7 +921,6 @@ async fn a_store_failure_leaves_the_state_and_the_engine_untouched() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn a_restricted_principal_is_refused_every_command_through_the_handle() {
     let rig = Rig::empty();
     let node_id = all_nodes(&rig.snapshot().await)[0].id;
@@ -979,7 +959,6 @@ async fn a_restricted_principal_is_refused_every_command_through_the_handle() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn app_ui_urls_are_refused_for_every_principal() {
     let rig = Rig::empty();
     let space = space_of(&rig.snapshot().await);
@@ -1022,7 +1001,6 @@ async fn app_ui_urls_are_refused_for_every_principal() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn a_recreated_sidebar_replaces_the_old_ui_principal() {
     let rig = Rig::empty();
     let old = rig.sidebar;
@@ -1065,7 +1043,6 @@ async fn a_recreated_sidebar_replaces_the_old_ui_principal() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn a_version_mismatch_is_refused() {
     let rig = Rig::empty();
     let request = Request {
@@ -1081,7 +1058,6 @@ async fn a_version_mismatch_is_refused() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn an_unregistered_ui_view_is_refused() {
     let rig = Rig::empty();
     let response = rig
@@ -1104,7 +1080,6 @@ async fn an_unregistered_ui_view_is_refused() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn published_events_carry_increasing_revisions() {
     let rig = Rig::empty();
     let space = space_of(&rig.snapshot().await);
@@ -1127,7 +1102,6 @@ async fn published_events_carry_increasing_revisions() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn the_snapshot_nests_children_and_flags_only_live_nodes() {
     let rig = Rig::empty();
     let space = space_of(&rig.snapshot().await);
@@ -1179,7 +1153,6 @@ async fn the_snapshot_nests_children_and_flags_only_live_nodes() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn navigating_a_suspended_tab_creates_a_view_without_showing_it() {
     let rig = Rig::empty();
     let space = space_of(&rig.snapshot().await);
@@ -1208,7 +1181,6 @@ async fn navigating_a_suspended_tab_creates_a_view_without_showing_it() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn a_popup_from_a_favorites_tab_opens_in_the_active_space() {
     let rig = Rig::empty();
     let space = space_of(&rig.snapshot().await);
@@ -1249,7 +1221,6 @@ async fn a_popup_from_a_favorites_tab_opens_in_the_active_space() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn a_popup_opens_a_tab_only_with_a_user_gesture() {
     let rig = Rig::empty();
     let opener = last_content_view(&rig.startup).expect("the first tab has a view");
@@ -1278,7 +1249,6 @@ async fn a_popup_opens_a_tab_only_with_a_user_gesture() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn a_burst_of_title_changes_does_not_hold_back_commands_or_flood_the_store() {
     let rig = Rig::empty();
     let view = last_content_view(&rig.startup).expect("the tab has a view");
@@ -1326,7 +1296,6 @@ async fn a_burst_of_title_changes_does_not_hold_back_commands_or_flood_the_store
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn title_changes_reach_the_store_within_one_flush_interval() {
     let rig = Rig::empty();
     let view = last_content_view(&rig.startup).expect("the tab has a view");
@@ -1352,7 +1321,6 @@ async fn title_changes_reach_the_store_within_one_flush_interval() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn shutdown_flushes_pending_writes_stops_the_core_and_is_idempotent() {
     let rig = Rig::empty();
     let view = last_content_view(&rig.startup).expect("the tab has a view");
@@ -1395,7 +1363,6 @@ async fn shutdown_flushes_pending_writes_stops_the_core_and_is_idempotent() {
 }
 
 #[tokio::test]
-#[ignore = "needs m1/model"]
 async fn closing_the_window_stops_the_actor() {
     let rig = Rig::empty();
     let window = rig.snapshot().await.window;
@@ -1419,7 +1386,6 @@ async fn closing_the_window_stops_the_actor() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "needs m1/model"]
 async fn concurrent_requests_are_totally_ordered() {
     let rig = Rig::empty();
     let space = space_of(&rig.snapshot().await);

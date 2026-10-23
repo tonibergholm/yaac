@@ -55,31 +55,26 @@ fn sqlite_child_in_other_container_is_rejected() {
 }
 
 #[test]
-#[ignore = "needs m1/model"]
 fn sqlite_container_with_nodes_cannot_be_deleted() {
     store_suite::check_container_with_nodes_cannot_be_deleted(&sqlite);
 }
 
 #[test]
-#[ignore = "needs m1/model"]
 fn sqlite_full_workspace_round_trips() {
     store_suite::check_full_workspace_round_trips(&sqlite);
 }
 
 #[test]
-#[ignore = "needs m1/model"]
 fn sqlite_delete_subtree_in_either_order() {
     store_suite::check_delete_subtree_in_either_order(&sqlite);
 }
 
 #[test]
-#[ignore = "needs m1/model"]
 fn sqlite_session_falls_back_when_selected_node_deleted() {
     store_suite::check_session_falls_back_when_selected_node_deleted(&sqlite);
 }
 
 #[test]
-#[ignore = "needs m1/model"]
 fn sqlite_run_all() {
     store_suite::run_all(&sqlite);
 }

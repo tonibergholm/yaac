@@ -111,7 +111,7 @@ pub fn check_failed_batch_leaves_nothing(make: &dyn Fn() -> Box<dyn Store>) {
     let mut store = make();
     let p = profile("p", ProfileKind::Standard);
     let c = favorites_of(&p);
-    let orphan = node(c.id, Some(NodeId::new()), "a0", NodeKind::Tab, "orphan");
+    let orphan = node(c.id, Some(NodeId::new()), "a1", NodeKind::Tab, "orphan");
     let result = store.apply(vec![
         StoreOp::UpsertProfile(p.clone()),
         StoreOp::UpsertContainer(c.clone()),
@@ -138,8 +138,8 @@ pub fn check_child_in_other_container_is_rejected(make: &dyn Fn() -> Box<dyn Sto
     let p2 = profile("p2", ProfileKind::Standard);
     let c1 = favorites_of(&p1);
     let c2 = favorites_of(&p2);
-    let parent = node(c1.id, None, "a0", NodeKind::Folder, "parent");
-    let child = node(c2.id, Some(parent.id), "a0", NodeKind::Tab, "child");
+    let parent = node(c1.id, None, "a1", NodeKind::Folder, "parent");
+    let child = node(c2.id, Some(parent.id), "a1", NodeKind::Tab, "child");
     let result = store.apply(vec![
         StoreOp::UpsertProfile(p1),
         StoreOp::UpsertProfile(p2),
@@ -161,7 +161,7 @@ pub fn check_container_with_nodes_cannot_be_deleted(make: &dyn Fn() -> Box<dyn S
     let mut store = make();
     let p = profile("p", ProfileKind::Standard);
     let c = favorites_of(&p);
-    let root = node(c.id, None, "a0", NodeKind::Tab, "root");
+    let root = node(c.id, None, "a1", NodeKind::Tab, "root");
     store
         .apply(vec![
             StoreOp::UpsertProfile(p),
@@ -347,7 +347,7 @@ impl Fixture {
             profile_id: profile.id,
             name: "Work".into(),
             theme: Some("dark".into()),
-            position: pos("a0"),
+            position: pos("a1"),
             agent_enabled: false,
         };
         let favorites = favorites_of(&profile);
@@ -357,13 +357,13 @@ impl Fixture {
             space_id: Some(space.id),
             kind: ContainerKind::Today,
         };
-        let folder = node(today.id, None, "a0", NodeKind::Folder, "folder");
-        let tab_one = node(today.id, Some(folder.id), "a0", NodeKind::Tab, "one");
-        let mut tab_two = node(today.id, Some(folder.id), "a1", NodeKind::Tab, "two");
+        let folder = node(today.id, None, "a1", NodeKind::Folder, "folder");
+        let tab_one = node(today.id, Some(folder.id), "a1", NodeKind::Tab, "one");
+        let mut tab_two = node(today.id, Some(folder.id), "a2", NodeKind::Tab, "two");
         tab_two.is_unread = true;
-        let split = node(today.id, None, "a1", NodeKind::Split, "split");
-        let split_one = node(today.id, Some(split.id), "a0", NodeKind::Tab, "s1");
-        let split_two = node(today.id, Some(split.id), "a1", NodeKind::Tab, "s2");
+        let split = node(today.id, None, "a2", NodeKind::Split, "split");
+        let split_one = node(today.id, Some(split.id), "a1", NodeKind::Tab, "s1");
+        let split_two = node(today.id, Some(split.id), "a2", NodeKind::Tab, "s2");
         let nodes = vec![
             folder.clone(),
             tab_one.clone(),

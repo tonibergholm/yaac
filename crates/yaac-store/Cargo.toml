@@ -15,3 +15,7 @@ yaac-core.workspace = true
 
 [dev-dependencies]
 yaac-core = { workspace = true, features = ["testing"] }
+yaac-api.workspace = true
+yaac-engine.workspace = true
+tempfile = "3"
+tokio.workspace = true

@@ -893,8 +893,12 @@ version = "0.0.0"
 dependencies = [
  "rusqlite",
  "serde",
+ "tempfile",
  "thiserror",
+ "tokio",
+ "yaac-api",
  "yaac-core",
+ "yaac-engine",
  "yaac-model",
 ]
 

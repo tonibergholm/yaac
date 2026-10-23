@@ -187,7 +187,6 @@ fn profile_and_favorites_survive_reopen_with_their_kinds() {
 }
 
 #[test]
-#[ignore = "needs m1/model"]
 fn restart_persists_full_workspace() {
     let dir = TempDir::new("restart-full");
     let path = dir.file();
@@ -210,14 +209,13 @@ fn rev_is_read_from_meta() {
 }
 
 #[test]
-#[ignore = "needs m1/model"]
 fn rev_is_largest_of_meta_and_node_rows() {
     let dir = TempDir::new("rev-max");
     let path = dir.file();
     let mut store = open(&path);
     let p = profile("p");
     let c = favorites_of(&p);
-    let mut root = node(c.id, None, "a0", NodeKind::Tab);
+    let mut root = node(c.id, None, "a1", NodeKind::Tab);
     root.rev = 9;
     store
         .apply(vec![
@@ -336,7 +334,6 @@ fn dangling_parent_is_corrupt() {
 }
 
 #[test]
-#[ignore = "needs m1/model"]
 fn stored_position_that_fails_validation_is_corrupt() {
     let dir = TempDir::new("bad-position");
     let path = dir.file();
@@ -425,10 +422,10 @@ fn schema_rejects_values_outside_the_checks() {
 fn delete_subtree_removes_exactly_the_listed_rows_in_either_order() {
     let p = profile("p");
     let c = favorites_of(&p);
-    let folder = node(c.id, None, "a0", NodeKind::Folder);
-    let t1 = node(c.id, Some(folder.id), "a0", NodeKind::Tab);
-    let t2 = node(c.id, Some(folder.id), "a1", NodeKind::Tab);
-    let other = node(c.id, None, "a1", NodeKind::Tab);
+    let folder = node(c.id, None, "a1", NodeKind::Folder);
+    let t1 = node(c.id, Some(folder.id), "a1", NodeKind::Tab);
+    let t2 = node(c.id, Some(folder.id), "a2", NodeKind::Tab);
+    let other = node(c.id, None, "a2", NodeKind::Tab);
     let setup = vec![
         StoreOp::UpsertProfile(p.clone()),
         StoreOp::UpsertContainer(c.clone()),
@@ -463,8 +460,8 @@ fn deleting_a_parent_without_its_children_fails_the_batch() {
     let mut store = open(&path);
     let p = profile("p");
     let c = favorites_of(&p);
-    let folder = node(c.id, None, "a0", NodeKind::Folder);
-    let child = node(c.id, Some(folder.id), "a0", NodeKind::Tab);
+    let folder = node(c.id, None, "a1", NodeKind::Folder);
+    let child = node(c.id, Some(folder.id), "a1", NodeKind::Tab);
     store
         .apply(vec![
             StoreOp::UpsertProfile(p),
@@ -492,7 +489,7 @@ fn deleting_the_selected_node_clears_the_session_selection() {
         profile_id: p.id,
         name: "Work".into(),
         theme: None,
-        position: pos("a0"),
+        position: pos("a1"),
         agent_enabled: false,
     };
     let today = Container {
@@ -501,7 +498,7 @@ fn deleting_the_selected_node_clears_the_session_selection() {
         space_id: Some(space.id),
         kind: ContainerKind::Today,
     };
-    let tab = node(today.id, None, "a0", NodeKind::Tab);
+    let tab = node(today.id, None, "a1", NodeKind::Tab);
     let window = WindowId::new();
     store
         .apply(vec![
@@ -550,7 +547,7 @@ fn updating_the_selected_node_keeps_the_session_selection() {
         profile_id: p.id,
         name: "Work".into(),
         theme: None,
-        position: pos("a0"),
+        position: pos("a1"),
         agent_enabled: false,
     };
     let today = Container {
@@ -559,7 +556,7 @@ fn updating_the_selected_node_keeps_the_session_selection() {
         space_id: Some(space.id),
         kind: ContainerKind::Today,
     };
-    let mut tab = node(today.id, None, "a0", NodeKind::Tab);
+    let mut tab = node(today.id, None, "a1", NodeKind::Tab);
     let window = WindowId::new();
     store
         .apply(vec![
@@ -604,7 +601,7 @@ fn rejected_batch_writes_nothing_by_row_count() {
             StoreOp::UpsertContainer(c),
         ])
         .expect("setup");
-    let bad = node(ContainerId::new(), None, "a0", NodeKind::Tab);
+    let bad = node(ContainerId::new(), None, "a1", NodeKind::Tab);
     let later = profile("later");
     assert!(
         store
@@ -636,7 +633,7 @@ fn container_space_profile_mismatch_is_rejected() {
         profile_id: a.id,
         name: "A".into(),
         theme: None,
-        position: pos("a0"),
+        position: pos("a1"),
         agent_enabled: false,
     };
     // Container in profile B, pointing at a Space of profile A.
@@ -668,7 +665,7 @@ fn container_holding_nodes_is_not_deleted() {
     let mut store = open(&path);
     let p = profile("p");
     let c = favorites_of(&p);
-    let root = node(c.id, None, "a0", NodeKind::Tab);
+    let root = node(c.id, None, "a1", NodeKind::Tab);
     store
         .apply(vec![
             StoreOp::UpsertProfile(p),

@@ -51,6 +51,11 @@ fn apply_op(tx: &Transaction<'_>, op: &StoreOp) -> Result<(), StoreError> {
         StoreOp::DeleteSession(id) => {
             tx.execute("DELETE FROM session WHERE window_id = ?1", [id.to_string()])
         }
+        StoreOp::SetRev(rev) => tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('rev', ?1) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [rev.to_string()],
+        ),
     };
     result.map(drop).map_err(backend)
 }

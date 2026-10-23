@@ -38,8 +38,8 @@ fn build_tree(nodes: Vec<Node>) -> Result<TreeState, StoreError> {
     TreeState::from_nodes(nodes).map_err(corrupt)
 }
 
-/// `Workspace.rev` is the larger of the `meta` row and the largest node `rev`. Nothing writes the
-/// `meta` row yet (see the report): `StoreOp` has no variant that sets it.
+/// `Workspace.rev` is the larger of the `meta` row (written by `StoreOp::SetRev`) and the largest
+/// node `rev`.
 fn revision(conn: &Connection) -> Result<u64, StoreError> {
     let node_max: Option<i64> = conn
         .query_row("SELECT MAX(rev) FROM node", [], |row| row.get(0))
