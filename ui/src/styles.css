@@ -398,6 +398,18 @@ ul.list[role='group'] {
   color: var(--muted);
 }
 
+.refusal {
+  margin: 0;
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.refusal p {
+  margin: 0 0 6px;
+}
+
 .link-status {
   margin: 0;
   padding: 6px 8px;

@@ -317,7 +317,9 @@ describe('Sidebar sync', () => {
     sidebar.start();
     await settle();
     expect(sidebar.store.get().load).toBe('failed');
-    expect(sidebar.store.get().notice).toBe('store unavailable');
+    // `internal` is transient: the sidebar reconnects instead of showing a notice.
+    expect(sidebar.store.get().link).toBe('reconnecting');
+    expect(sidebar.store.get().notice).toBeNull();
 
     bridge.respond = (body) => (body.kind === 'query' ? snapshotResult(bridge.snap) : { status: 'ok', body: { type: 'ack', rev: 0 } });
     sidebar.retry();

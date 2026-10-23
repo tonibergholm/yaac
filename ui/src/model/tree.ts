@@ -156,7 +156,11 @@ export function placementAtContainerEnd(
   container: SidebarContainer,
 ): Placement | null {
   const space = activeSpace(snapshot);
-  if (!space || !locate(space, draggedId)) return null;
+  const loc = space ? locate(space, draggedId) : null;
+  if (!space || !loc) return null;
+  // Already the last root node of this container: moving it there changes nothing.
+  const last = containerNodes(space, container).at(-1);
+  if (loc.parent === null && loc.container === container && last?.id === draggedId) return null;
   return { space: space.id, container, parent: null, before: null };
 }
 

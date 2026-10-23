@@ -108,3 +108,36 @@ describe('internal tree drags still follow the drop targets', () => {
     expect(dt.dropEffect).toBe('none');
   });
 });
+
+describe('the internal drag type is a per-session token', () => {
+  it('the internal type is application/x-yaac-node followed by a random 128-bit hex token', () => {
+    expect(NODE_MIME).toMatch(/^application\/x-yaac-node-[0-9a-f]{32}$/);
+    expect(NODE_MIME).not.toBe('application/x-yaac-node');
+  });
+
+  it('a drag that carries the plain, unsuffixed tree type is foreign and refused', () => {
+    const dt = transfer(['application/x-yaac-node'], 'copy');
+    expect(dispatch('dragOver', document.body, dt)).toBe(false);
+    expect(dt.dropEffect).toBe('none');
+  });
+
+  it('a drag with any other type is foreign and refused', () => {
+    const dt = transfer(['application/x-yaac-node-0000'], 'copy');
+    expect(dispatch('dragOver', document.body, dt)).toBe(false);
+    expect(dt.dropEffect).toBe('none');
+  });
+
+  it('a drag that carries this session token is internal and not refused by the window guard', () => {
+    const dt = transfer([NODE_MIME], 'copy');
+    expect(dispatch('dragOver', document.body, dt)).toBe(true);
+    expect(dt.dropEffect).toBe('copy');
+  });
+
+  it('a page that does not know the token cannot start an internal drag', () => {
+    // A content page can only guess the prefix. The guessed type never matches the session token.
+    const guess = `application/x-yaac-node-${'0'.repeat(32)}`;
+    expect(guess).not.toBe(NODE_MIME);
+    const dt = transfer([guess], 'copy');
+    expect(dispatch('drop', document.body, dt)).toBe(false);
+  });
+});

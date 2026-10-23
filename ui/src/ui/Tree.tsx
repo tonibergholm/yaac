@@ -74,7 +74,11 @@ export function Tree({ sidebar, state, snapshot, space }: TreeProps) {
   useLayoutEffect(() => {
     if (!state.focusRequested || state.focusId === null) return;
     if (snapshot.rev < state.focusRev) return;
-    rowEls.current.get(state.focusId)?.focus();
+    // If the requested row is not rendered (for example it sits in a folder that could not expand),
+    // focus the first row instead of letting focus fall to <body>.
+    const first = rows[0];
+    const el = rowEls.current.get(state.focusId) ?? (first ? rowEls.current.get(first.node.id) : undefined);
+    el?.focus();
     sidebar.clearFocusRequest();
   });
 

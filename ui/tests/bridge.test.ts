@@ -171,7 +171,7 @@ describe('MockBridge', () => {
         to: { space: snap.active_space, container: 'pinned', parent: folder.id, before: null },
       },
     });
-    expect(cycle).toMatchObject({ status: 'err', error: { code: 'bad_request' } });
+    expect(cycle).toMatchObject({ status: 'err', error: { code: 'conflict' } });
 
     const scheme = await send(bridge, {
       kind: 'command',

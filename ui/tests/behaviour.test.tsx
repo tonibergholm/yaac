@@ -263,3 +263,29 @@ describe('reconnecting state', () => {
     sidebar.stop();
   });
 });
+
+describe('no-op moves and permanent refusal in the UI', () => {
+  it('Alt+Shift+P on the last pinned tab sends nothing', async () => {
+    const bridge = tree();
+    await mount(bridge);
+    // Mail is the last root node of Pinned.
+    fireEvent.keyDown(item(/^Mail/), { key: 'π', code: 'KeyP', altKey: true, shiftKey: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(bridge.commands()).toStrictEqual([]);
+  });
+
+  it('a refused session shows its text and a Retry button, and Retry sends a new request', async () => {
+    const bridge = tree();
+    const sidebar = await mount(bridge);
+    bridge.respond = () => ({ status: 'err', error: { code: 'unsupported_version', message: 'old UI' } });
+    bridge.emit({ topic: 'tree', rev: 11 });
+    expect(await screen.findByText(/refused this UI version/)).toBeTruthy();
+
+    const before = bridge.queries().length;
+    bridge.respond = () => ({ status: 'ok', body: { type: 'snapshot', ...bridge.snap } });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(bridge.queries().length).toBeGreaterThan(before));
+    await waitFor(() => expect(screen.queryByText(/refused this UI version/)).toBeNull());
+    sidebar.stop();
+  });
+});

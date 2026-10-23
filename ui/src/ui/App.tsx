@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'preact/compat';
+import { refusalText } from '../state/sidebar';
 import { activeSpace, locate } from '../model/tree';
 import type { Sidebar } from '../state/sidebar';
 import { AddressBar } from './AddressBar';
@@ -17,16 +18,34 @@ export function App({ sidebar }: { sidebar: Sidebar }) {
         </button>
       </p>
     );
+  // A permanent refusal: no retries until the user asks. The text says what to do.
+  const refusal =
+    state.link === 'refused' && state.refusal !== null ? (
+      <div class="refusal" role="alert">
+        <p>{refusalText(state.refusal)}</p>
+        <button type="button" class="button" onClick={() => sidebar.retry()}>
+          Retry
+        </button>
+      </div>
+    ) : null;
 
   const snapshot = state.snapshot;
   if (snapshot === null) {
+    if (state.link === 'refused') {
+      return (
+        <div class="sidebar">
+          {refusal}
+          {notice}
+        </div>
+      );
+    }
     return (
       <div class="sidebar">
         {state.load === 'failed' ? (
           <div class="status">
-            <p>Tabs could not be loaded.</p>
+            <p>Cannot reach the browser core. Retrying.</p>
             <button type="button" class="button" onClick={() => sidebar.retry()}>
-              Retry
+              Retry now
             </button>
           </div>
         ) : (
@@ -43,6 +62,7 @@ export function App({ sidebar }: { sidebar: Sidebar }) {
 
   return (
     <div class="sidebar">
+      {refusal}
       <SpaceSwitcher sidebar={sidebar} snapshot={snapshot} />
       <AddressBar key={selected?.id ?? 'none'} sidebar={sidebar} selected={selected} />
       <Toolbar sidebar={sidebar} />

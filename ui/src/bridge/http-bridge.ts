@@ -1,5 +1,14 @@
 import { API_VERSION, RPC_ENDPOINT, type ApiRequest, type ApiResult, type Body, type CoreEvent } from '../wire';
-import { BridgeError, RPC_TIMEOUT_MS, RpcTimeoutError, isCoreEvent, type Bridge, type EventHandler } from './types';
+import {
+  BridgeError,
+  ProtocolError,
+  RPC_TIMEOUT_MS,
+  RpcStatusError,
+  RpcTimeoutError,
+  isCoreEvent,
+  type Bridge,
+  type EventHandler,
+} from './types';
 import { parseApiResponse } from './validate';
 
 /**
@@ -31,12 +40,12 @@ export class HttpBridge implements Bridge {
     } catch (error) {
       throw transportError(error);
     }
-    if (!response.ok) throw new BridgeError(`rpc failed with HTTP ${response.status}`);
+    if (!response.ok) throw new RpcStatusError(response.status);
     let parsed: unknown;
     try {
       parsed = await response.json();
     } catch {
-      throw new BridgeError('rpc reply is not JSON');
+      throw new ProtocolError('rpc reply is not JSON');
     }
     return parseApiResponse(parsed, id);
   }
