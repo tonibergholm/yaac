@@ -26,6 +26,11 @@ wrap_window_delegate! {
             let Some(window) = window else { return };
             let mut root = View::from(&self.root);
             window.add_child_view(Some(&mut root));
+            // The window must get the requested size itself. On the Linux headless Ozone platform the
+            // top-level window stayed 1x1 while its root panel was laid out at the requested size, so
+            // the browser views got no height. Setting it explicitly is correct on every platform.
+            let size = Size { width: self.width, height: self.height };
+            window.set_size(Some(&size));
             window.show();
         }
 
