@@ -65,6 +65,30 @@ struct State {
     queue: VecDeque<Queued>,
     pump_scheduled: bool,
     closing: HashSet<WindowId>,
+    /// Windows whose close attempt committed.
+    committed: HashSet<WindowId>,
+    /// Close attempts in progress, with the `Closed` events they hold back.
+    attempts: HashMap<WindowId, Vec<ViewId>>,
+}
+
+/// Test hook: until this instant, new profiles are not ready (see `engine::test_hooks`).
+#[cfg(any(debug_assertions, feature = "dev-tools"))]
+pub(crate) static PROFILE_DELAY: std::sync::Mutex<
+    Option<(std::time::Instant, std::time::Duration)>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(any(debug_assertions, feature = "dev-tools"))]
+fn profile_delayed() -> bool {
+    PROFILE_DELAY
+        .lock()
+        .ok()
+        .and_then(|slot| *slot)
+        .is_some_and(|(since, delay)| since.elapsed() < delay)
+}
+
+#[cfg(not(any(debug_assertions, feature = "dev-tools")))]
+fn profile_delayed() -> bool {
+    false
 }
 
 thread_local! {
@@ -270,6 +294,9 @@ fn create_view(view: ViewId, window: WindowId, spec: &ViewSpec) -> Outcome {
     let Some(shared) = shared() else {
         return Outcome::Failed("not installed");
     };
+    if profile_delayed() {
+        return Outcome::Retry;
+    }
     if !with(|s| s.windows.contains_key(&window)) {
         return Outcome::Failed("unknown window");
     }
@@ -497,8 +524,9 @@ pub(crate) fn browser_created(view: ViewId, browser: Browser) {
     post_to_ui(Box::new(pump));
 }
 
-/// `on_before_close`: the browser is gone. Removes the view from the layout and reports `Closed`,
-/// unless the app is quitting. Closes the window when it was the last view.
+/// `on_before_close`: the browser is gone. Removes the view from the layout. `Closed` is reported
+/// unless the app is quitting. During a close attempt it is held until the attempt commits or is
+/// cancelled, so `WindowClosing` always goes out before any `Closed` of the same window.
 pub(crate) fn browser_closed(view: ViewId) {
     let Some(shared) = shared() else { return };
     let removed = with(|s| {
@@ -510,9 +538,16 @@ pub(crate) fn browser_closed(view: ViewId) {
             }
             None => (None, false),
         };
-        Some((entry, root, empty))
+        let held = match s.attempts.get_mut(&entry.window) {
+            Some(buffer) => {
+                buffer.push(view);
+                true
+            }
+            None => false,
+        };
+        Some((entry, root, empty, held))
     });
-    let Some((entry, root, empty)) = removed else {
+    let Some((entry, root, empty, held)) = removed else {
         return;
     };
     if let Some(browser) = &entry.browser {
@@ -522,11 +557,10 @@ pub(crate) fn browser_closed(view: ViewId) {
         shared.live[Shared::live_index(entry.kind)].fetch_sub(1, Ordering::SeqCst);
     }
     shared.registry.remove_view(view);
-    let quitting = quitting();
-    if !quitting {
+    if !held && !quitting() {
         shared.emit(EngineEvent::Closed { view });
     }
-    elog!("view closed view={view} window_empty={empty} quitting={quitting}");
+    elog!("view closed view={view} window_empty={empty} held={held}");
 
     // Detach and close outside the callback, so CEF finishes this close first.
     let window_id = entry.window;
@@ -539,11 +573,13 @@ pub(crate) fn browser_closed(view: ViewId) {
         if empty {
             close_window(window_id);
         }
+        maybe_quit();
     }));
 }
 
 /// `on_render_process_terminated`: the renderer is gone. Report it, and close the browser so its
-/// view leaves the layout. A crashed sidebar is not left behind next to its replacement.
+/// view leaves the layout. A crashed sidebar is not left behind next to its replacement. The close is
+/// posted, not done inside the callback.
 pub(crate) fn browser_crashed(view: ViewId) {
     let Some(shared) = shared() else { return };
     let browser = with(|s| s.views.get(&view).and_then(|entry| entry.browser.clone()));
@@ -551,7 +587,9 @@ pub(crate) fn browser_crashed(view: ViewId) {
         shared.emit(EngineEvent::Crashed { view });
     }
     match browser {
-        Some(browser) => close_browser(&browser, true),
+        Some(browser) => {
+            post_to_ui(Box::new(move || close_browser(&browser, true)));
+        }
         None => elog!("crash without browser view={view}"),
     }
 }
@@ -564,36 +602,87 @@ fn close_window(window: WindowId) {
     }
 }
 
-/// `WindowDelegate::can_close`, called before the window closes. The first call for a window starts
-/// its close: `WindowClosing` goes out first, the engine enters the quitting state, and views still
-/// being created are cancelled. Then every browser is asked to close. The window closes when all of
-/// them accept.
+/// `WindowDelegate::can_close`. The close has a commit point.
+///
+/// 1. A close attempt starts. Browsers are asked to close, content browsers first and the sidebar
+///    last. A browser that does not close (its unload handler cancelled, or the close is pending)
+///    ends the attempt: nothing is committed, the window stays open, and RPCs and commands keep
+///    working. `Closed` events held during the attempt are then sent for the browsers that did close.
+/// 2. Every browser agreed (or the close is forced). The commit: the engine enters the quitting
+///    state, `WindowClosing` goes out first, creations still pending are cancelled, and the held
+///    `Closed` events follow. The window then closes.
+///
+/// Once committed, the window closes without asking again.
 pub(crate) fn can_close_window(window: WindowId) -> bool {
     let Some(shared) = shared() else { return true };
-    let first = with(|s| s.closing.insert(window));
-    if first {
-        shared.quitting.store(true, Ordering::SeqCst);
-        shared.emit(EngineEvent::WindowClosing { window });
-        elog!("window closing window={window}");
-        cancel_pending(window, &shared);
+    if with(|s| s.committed.contains(&window)) {
+        return true;
     }
+    let forced = shared.force.load(Ordering::SeqCst);
     let browsers: Vec<Browser> = with(|s| {
         let Some(entry) = s.windows.get(&window) else {
             return Vec::new();
         };
-        entry
+        let mut found: Vec<(ViewKind, Browser)> = entry
             .views
             .iter()
-            .filter_map(|id| s.views.get(id)?.browser.clone())
-            .collect()
+            .filter_map(|id| {
+                let view = s.views.get(id)?;
+                Some((view.kind, view.browser.clone()?))
+            })
+            .collect();
+        // Content browsers first: the sidebar is closed only after every content browser agreed.
+        found.sort_by_key(|(kind, _)| *kind == ViewKind::Sidebar);
+        found.into_iter().map(|(_, browser)| browser).collect()
     });
-    let mut allowed = true;
-    for browser in browsers {
-        if let Some(host) = browser.host() {
-            allowed &= host.try_close_browser() != 0;
+    with(|s| {
+        s.attempts.entry(window).or_default();
+    });
+    let mut agreed = true;
+    for browser in &browsers {
+        if forced {
+            close_browser(browser, true);
+            continue;
+        }
+        let Some(host) = browser.host() else { continue };
+        if host.try_close_browser() == 0 {
+            agreed = false;
+            break;
         }
     }
-    allowed
+    if agreed || forced {
+        commit_close(window, &shared);
+        return true;
+    }
+    cancel_attempt(window, &shared);
+    false
+}
+
+/// The commit point: every browser agreed to close.
+fn commit_close(window: WindowId, shared: &Shared) {
+    let held = with(|s| {
+        s.committed.insert(window);
+        s.attempts.remove(&window).unwrap_or_default()
+    });
+    shared.quitting.store(true, Ordering::SeqCst);
+    shared.emit(EngineEvent::WindowClosing { window });
+    elog!("window closing window={window}");
+    cancel_pending(window, shared);
+    for view in held {
+        shared.emit(EngineEvent::Closed { view });
+    }
+}
+
+/// A close that did not commit. The browsers that did close are reported, the rest keep running.
+fn cancel_attempt(window: WindowId, shared: &Shared) {
+    let held = with(|s| s.attempts.remove(&window).unwrap_or_default());
+    elog!(
+        "window close cancelled window={window} closed_views={}",
+        held.len()
+    );
+    for view in held {
+        shared.emit(EngineEvent::Closed { view });
+    }
 }
 
 /// Cancels creation of a closing window's views. Queued creations are removed and reported as
@@ -641,18 +730,40 @@ fn command_view(command: &EngineCommand) -> Option<ViewId> {
     }
 }
 
-/// `WindowDelegate::on_window_destroyed`. Quits the message loop after the last window.
+/// `WindowDelegate::on_window_destroyed`. Views of this window whose browser never existed are
+/// dropped (nothing will report them). Views with a browser are still closing: the loop ends after
+/// the last of them has reported `on_before_close`.
 pub(crate) fn window_destroyed(window: WindowId) {
-    let remaining = with(|s| {
+    let dropped = with(|s| {
         s.windows.remove(&window);
         s.closing.remove(&window);
-        s.windows.len()
+        s.committed.remove(&window);
+        s.attempts.remove(&window);
+        let gone: Vec<ViewId> = s
+            .views
+            .iter()
+            .filter(|(_, v)| v.window == window && v.browser.is_none())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &gone {
+            s.views.remove(id);
+        }
+        gone
     });
     if let Some(shared) = shared() {
+        for view in dropped {
+            shared.registry.remove_view(view);
+        }
         shared.emit(EngineEvent::WindowClosed { window });
     }
-    elog!("window closed window={window} remaining={remaining}");
-    if remaining == 0 {
+    elog!("window closed window={window}");
+    maybe_quit();
+}
+
+/// Ends the message loop once no window and no view is left. Called after the last window closes
+/// and after the last `on_before_close`.
+fn maybe_quit() {
+    if with(|s| s.windows.is_empty() && s.views.is_empty()) {
         quit_message_loop();
     }
 }

@@ -24,3 +24,14 @@ macro_rules! elog {
     };
 }
 pub(crate) use elog;
+
+/// Logs only in debug and `dev-tools` builds. Used for per-event callbacks that page content can
+/// drive, so a release build writes nothing per event.
+macro_rules! dev_log {
+    ($($arg:tt)*) => {
+        if cfg!(any(debug_assertions, feature = "dev-tools")) {
+            $crate::log::line(format_args!($($arg)*))
+        }
+    };
+}
+pub(crate) use dev_log;

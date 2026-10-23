@@ -38,6 +38,8 @@ pub use assets::DirAssets;
 #[cfg(all(feature = "embed-ui", not(debug_assertions)))]
 pub use assets::embedded_ui;
 pub use assets::{Asset, EmbeddedAssets, UiAssets};
+#[cfg(any(debug_assertions, feature = "dev-tools"))]
+pub use engine::test_hooks;
 pub use engine::{CefEngine, EngineSettings, PushError, post_to_ui};
 pub use lifecycle::{run_browser, run_helper};
 pub use rpc::{RPC_PATH, RpcHandler, UiCaller};

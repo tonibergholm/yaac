@@ -51,32 +51,44 @@ impl Coalescer {
     }
 }
 
-/// At most `max` popup reports per opener in any `window`. Excess popups are still denied, and
-/// only counted.
+/// Popup reports per opener, with separate budgets for popups that came from a user gesture and
+/// those that did not. A popup over budget is still denied, and is only counted. The count is
+/// summarised by `take_summary`, at most once per second.
 pub(crate) struct PopupLimiter {
-    max: usize,
+    gesture_max: usize,
+    other_max: usize,
     window: Duration,
-    recent: HashMap<ViewId, VecDeque<Instant>>,
+    recent: HashMap<(ViewId, bool), VecDeque<Instant>>,
     suppressed: u64,
+    reported_suppressed: u64,
+    last_summary: Option<Instant>,
 }
 
 impl PopupLimiter {
-    pub(crate) fn new(max: usize, window: Duration) -> Self {
+    pub(crate) fn new(gesture_max: usize, other_max: usize, window: Duration) -> Self {
         Self {
-            max,
+            gesture_max,
+            other_max,
             window,
             recent: HashMap::new(),
             suppressed: 0,
+            reported_suppressed: 0,
+            last_summary: None,
         }
     }
 
     /// True if this popup may be reported.
-    pub(crate) fn allow(&mut self, opener: ViewId, now: Instant) -> bool {
+    pub(crate) fn allow(&mut self, opener: ViewId, user_gesture: bool, now: Instant) -> bool {
         // Keep the map small: forget openers with nothing recent.
         if self.recent.len() > 1024 {
             self.recent.clear();
         }
-        let times = self.recent.entry(opener).or_default();
+        let max = if user_gesture {
+            self.gesture_max
+        } else {
+            self.other_max
+        };
+        let times = self.recent.entry((opener, user_gesture)).or_default();
         while let Some(front) = times.front() {
             if now.duration_since(*front) >= self.window {
                 times.pop_front();
@@ -84,7 +96,7 @@ impl PopupLimiter {
                 break;
             }
         }
-        if times.len() < self.max {
+        if times.len() < max {
             times.push_back(now);
             true
         } else {
@@ -93,6 +105,23 @@ impl PopupLimiter {
         }
     }
 
+    /// The number of popups suppressed since the last summary, when a summary is due (at most one
+    /// per second). None otherwise.
+    pub(crate) fn take_summary(&mut self, now: Instant) -> Option<u64> {
+        let due = self
+            .last_summary
+            .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1));
+        let fresh = self.suppressed - self.reported_suppressed;
+        if due && fresh > 0 {
+            self.last_summary = Some(now);
+            self.reported_suppressed = self.suppressed;
+            Some(fresh)
+        } else {
+            None
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn suppressed(&self) -> u64 {
         self.suppressed
     }
@@ -184,15 +213,45 @@ mod tests {
 
     #[test]
     fn popups_are_limited_per_opener_and_recover_after_the_window() {
-        let mut limiter = PopupLimiter::new(4, Duration::from_secs(1));
+        let mut limiter = PopupLimiter::new(4, 2, Duration::from_secs(1));
         let t0 = Instant::now();
         let opener = ViewId(3);
-        let allowed: Vec<bool> = (0..10).map(|_| limiter.allow(opener, t0)).collect();
+        let allowed: Vec<bool> = (0..10).map(|_| limiter.allow(opener, true, t0)).collect();
         assert_eq!(allowed.iter().filter(|a| **a).count(), 4);
         assert_eq!(limiter.suppressed(), 6);
         // Another opener has its own budget.
-        assert!(limiter.allow(ViewId(4), t0));
+        assert!(limiter.allow(ViewId(4), true, t0));
         // After the window the budget is back.
-        assert!(limiter.allow(opener, t0 + Duration::from_millis(1100)));
+        assert!(limiter.allow(opener, true, t0 + Duration::from_millis(1100)));
+    }
+
+    #[test]
+    fn non_gesture_popups_have_their_own_smaller_budget() {
+        let mut limiter = PopupLimiter::new(4, 2, Duration::from_secs(1));
+        let t0 = Instant::now();
+        let opener = ViewId(3);
+        let allowed = (0..5).filter(|_| limiter.allow(opener, false, t0)).count();
+        assert_eq!(allowed, 2);
+        // The gesture budget is untouched by the non-gesture flood.
+        assert!(limiter.allow(opener, true, t0));
+    }
+
+    #[test]
+    fn suppression_is_summarised_at_most_once_a_second() {
+        let mut limiter = PopupLimiter::new(1, 1, Duration::from_secs(10));
+        let t0 = Instant::now();
+        for _ in 0..50 {
+            limiter.allow(ViewId(1), true, t0);
+        }
+        assert_eq!(limiter.take_summary(t0), Some(49));
+        for _ in 0..50 {
+            limiter.allow(ViewId(1), true, t0);
+        }
+        assert_eq!(
+            limiter.take_summary(t0 + Duration::from_millis(500)),
+            None,
+            "not yet due"
+        );
+        assert_eq!(limiter.take_summary(t0 + Duration::from_secs(2)), Some(50));
     }
 }

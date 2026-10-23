@@ -4,14 +4,33 @@
 //! URLs as scheme and host only.
 
 use crate::engine::Shared;
+use crate::log::dev_log;
 use crate::log::elog;
 use crate::nav::NavTracker;
 use crate::text::{cap_title, cap_url, redact_url};
 use crate::ui;
 use cef::*;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use yaac_engine::{EngineEvent, ViewKind};
 use yaac_model::ViewId;
+
+/// Test hook: how many unload confirmations to answer "stay" (cancel the close). Zero in production:
+/// the app accepts every unload prompt, so a close only cancels when a test asks it to.
+pub(crate) static UNLOAD_CANCELS: AtomicU32 = AtomicU32::new(0);
+
+fn unload_allowed() -> bool {
+    #[cfg(any(debug_assertions, feature = "dev-tools"))]
+    {
+        if UNLOAD_CANCELS
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            return false;
+        }
+    }
+    true
+}
 
 /// Whether a navigation may proceed. UI browsers stay on `app://ui/`. Content browsers never reach
 /// `app://` (docs/architecture.md section 8).
@@ -50,6 +69,33 @@ wrap_client! {
 
         fn request_handler(&self) -> Option<RequestHandler> {
             Some(EngineRequest::new(self.view, self.kind, self.shared.clone()))
+        }
+
+        fn jsdialog_handler(&self) -> Option<JsdialogHandler> {
+            Some(EngineJsDialog::new())
+        }
+    }
+}
+
+wrap_jsdialog_handler! {
+    pub(crate) struct EngineJsDialog {}
+
+    impl JsdialogHandler {
+        fn on_before_unload_dialog(
+            &self,
+            _browser: Option<&mut Browser>,
+            _message_text: Option<&CefString>,
+            _is_reload: i32,
+            callback: Option<&mut JsdialogCallback>,
+        ) -> i32 {
+            // The page's beforeunload confirmation is answered here, synchronously. "Stay" cancels
+            // the close and leaves every browser as it was.
+            let allow = unload_allowed();
+            if let Some(callback) = callback {
+                callback.cont(i32::from(allow), None);
+            }
+            dev_log!("unload confirmation answered allow={allow}");
+            1
         }
     }
 }
@@ -90,17 +136,16 @@ wrap_life_span_handler! {
             // Always denied, synchronously. Only the first few per second per opener are reported;
             // the core decides, through a command, whether to open a tab.
             let url = target_url.map(CefString::to_string).unwrap_or_default();
-            let (reported, suppressed) = self.shared.allow_popup(self.view);
-            if reported {
-                elog!("popup denied opener={} url={}", self.view, redact_url(&url));
+            let gesture = user_gesture != 0;
+            if self.shared.allow_popup(self.view, gesture) {
                 self.shared.emit(EngineEvent::PopupRequested {
                     opener: self.view,
                     url: cap_url(&url),
-                    user_gesture: user_gesture != 0,
+                    user_gesture: gesture,
                 });
-            } else {
-                elog!("popup denied opener={} rate-limited suppressed={suppressed}", self.view);
             }
+            // Denied in every case. Per-popup lines are not logged; suppression is summarised.
+            self.shared.log_popup_summary();
             1
         }
     }
@@ -136,7 +181,7 @@ wrap_display_handler! {
             }
             let url = url.map(CefString::to_string).unwrap_or_default();
             let nav_gen = self.nav.lock().map(|mut nav| nav.address_change()).unwrap_or(0);
-            elog!("navigated view={} nav_gen={nav_gen} url={}", self.view, redact_url(&url));
+            dev_log!("navigated view={} nav_gen={nav_gen} url={}", self.view, redact_url(&url));
             self.shared.emit(EngineEvent::Navigated {
                 view: self.view,
                 nav_gen,
@@ -162,7 +207,7 @@ wrap_load_handler! {
         ) {
             if is_main(frame) {
                 let generation = self.nav.lock().map(|mut nav| nav.load_start()).unwrap_or(0);
-                elog!("load start view={} nav_gen={generation}", self.view);
+                dev_log!("load start view={} nav_gen={generation}", self.view);
             }
         }
 

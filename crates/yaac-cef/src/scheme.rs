@@ -521,10 +521,12 @@ mod tests {
             rpc_answered: AtomicU64::new(0),
             rpc_inflight: AtomicUsize::new(0),
             quitting: AtomicBool::new(false),
+            force: AtomicBool::new(false),
+            flushed: AtomicU64::new(0),
             live: [AtomicUsize::new(0), AtomicUsize::new(0)],
             coalescer: Mutex::new(Coalescer::default()),
             flush_scheduled: AtomicBool::new(false),
-            popups: Mutex::new(PopupLimiter::new(4, Duration::from_secs(1))),
+            popups: Mutex::new(PopupLimiter::new(4, 2, Duration::from_secs(1))),
         };
         (shared, runtime)
     }
