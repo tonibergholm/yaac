@@ -4,6 +4,7 @@
 //! `lifecycle::run_helper`). What is left is the windowing platform and the password store.
 
 use cef::*;
+use std::path::Path;
 
 /// Nothing to hold: the library is already mapped through RUNPATH.
 pub(crate) struct Library;
