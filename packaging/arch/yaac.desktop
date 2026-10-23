@@ -7,4 +7,4 @@ Exec=yaac-app
 Icon=yaac
 Terminal=false
 Categories=Network;WebBrowser;
-StartupWMClass=cef
+StartupWMClass=yaac

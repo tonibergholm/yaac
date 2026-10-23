@@ -5,8 +5,8 @@
 use crate::engine;
 use cef::application_mac::{CefAppProtocol, CrAppControlProtocol, CrAppProtocol};
 use cef::{
-    CefString, CommandLine, ImplCommandLine, Window, args::Args, library_loader::LibraryLoader,
-    sandbox::Sandbox,
+    CefString, CommandLine, ImplCommandLine, LinuxWindowProperties, Window, args::Args,
+    library_loader::LibraryLoader, sandbox::Sandbox,
 };
 use objc2::{
     ClassType, DefinedClass, MainThreadMarker, define_class, extern_methods,
@@ -35,6 +35,11 @@ pub(crate) fn helper_sandbox(args: &Args) -> Sandbox {
     let mut sandbox = Sandbox::new();
     sandbox.initialize(args.as_main_args());
     sandbox
+}
+
+/// macOS has no Wayland app id or X11 class to set.
+pub(crate) fn fill_window_properties(_properties: &mut LinuxWindowProperties) -> i32 {
+    0
 }
 
 /// macOS sizes the window from its delegate already; nothing to do.

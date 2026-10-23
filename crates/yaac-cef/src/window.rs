@@ -38,6 +38,10 @@ wrap_window_delegate! {
             i32::from(ui::can_close_window(self.window))
         }
 
+        fn linux_window_properties(&self, _window: Option<&mut Window>, properties: Option<&mut LinuxWindowProperties>) -> i32 {
+            properties.map_or(0, crate::os::fill_window_properties)
+        }
+
         fn window_runtime_style(&self) -> RuntimeStyle {
             RuntimeStyle::ALLOY
         }

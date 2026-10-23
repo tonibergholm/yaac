@@ -27,6 +27,13 @@ pub(crate) fn fit_window(window: &Window, width: i32, height: i32) {
     window.set_size(Some(&size));
 }
 
+/// The Wayland app id and the X11 class: the desktop entry's StartupWMClass matches them.
+pub(crate) fn fill_window_properties(properties: &mut LinuxWindowProperties) -> i32 {
+    properties.wayland_app_id = CefString::from("yaac");
+    properties.wm_class_class = CefString::from("yaac");
+    1
+}
+
 /// Linux has no application subclass to install.
 pub(crate) fn setup_application() {}
 
