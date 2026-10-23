@@ -111,14 +111,14 @@ build() {
   export CARGO_NET_OFFLINE=true
   (cd ui && pnpm build)
   # Assembles the same runtime layout as the development bundle, with the UI embedded.
-  YAAC_BUNDLE_NO_UI=1 PROFILE=release BUNDLE_OUT="$srcdir/bundle" \
+  YAAC_BUNDLE_NO_UI=1 PROFILE=release BUNDLE_OUT="$srcdir/yaac/target/bundle-pkg" \
     ./crates/yaac-app/scripts/bundle-linux.sh
 }
 
 package() {
   cd yaac
   install -dm755 "$pkgdir/usr/lib/yaac"
-  cp -a "$srcdir/bundle/." "$pkgdir/usr/lib/yaac/"
+  cp -a "$srcdir/yaac/target/bundle-pkg/." "$pkgdir/usr/lib/yaac/"
   install -dm755 "$pkgdir/usr/bin"
   ln -s /usr/lib/yaac/yaac-app "$pkgdir/usr/bin/yaac-app"
   install -Dm644 packaging/arch/yaac.desktop "$pkgdir/usr/share/applications/yaac.desktop"

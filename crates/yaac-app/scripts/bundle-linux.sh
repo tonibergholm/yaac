@@ -26,6 +26,14 @@ if [ ! -f "$cef_dist/libcef.so" ] || [ ! -f "$cef_dist/archive.json" ]; then
     exit 1
 fi
 out=${BUNDLE_OUT:-$root/target/bundle-linux}
+# The bundle directory is deleted and rebuilt, so it must lie strictly under the repo's target/.
+case "$out" in
+    "$root/target/"*/*|"$root/target/"?*) ;;
+    *) echo "bundle-linux: BUNDLE_OUT must be a directory under $root/target/ (got $out)" >&2; exit 2 ;;
+esac
+case "$out" in
+    *'/../'*|*/..|*/.) echo "bundle-linux: BUNDLE_OUT must not contain '..' or '.'" >&2; exit 2 ;;
+esac
 profile=${PROFILE:-debug}
 
 cd "$crate"

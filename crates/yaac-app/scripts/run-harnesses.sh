@@ -30,6 +30,10 @@ case "$os" in
     Linux)
         app=${APP:-$root/target/bundle-linux/yaac-app}
         : "${YAAC_TEST_HOME:?Linux: set YAAC_TEST_HOME to a scratch directory outside the real home data}"
+        case "$YAAC_TEST_HOME" in
+            /*) ;;
+            *) echo "run-harnesses: YAAC_TEST_HOME must be an absolute path" >&2; exit 2 ;;
+        esac
         ;;
     *) echo "run-harnesses: unsupported OS $os" >&2; exit 2 ;;
 esac
@@ -57,13 +61,21 @@ isolate_home() {
 # instance and its dead bus). No X display is passed, so Chromium cannot choose XWayland.
 guard_linux() {
     case "${XDG_RUNTIME_DIR:-}" in
-        */yaac-nested) ;;
-        *) echo "run-harnesses: XDG_RUNTIME_DIR must be the nested session directory (*/yaac-nested)" >&2; exit 2 ;;
+        /*/yaac-nested) ;;
+        *) echo "run-harnesses: XDG_RUNTIME_DIR must be the absolute nested session directory (*/yaac-nested); the owner's runtime directory is never used" >&2; exit 2 ;;
     esac
-    [ -n "${WAYLAND_DISPLAY:-}" ] && [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ] || {
-        echo "run-harnesses: WAYLAND_DISPLAY is not the nested socket" >&2; exit 2; }
-    [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && [ -d "$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE" ] || {
-        echo "run-harnesses: HYPRLAND_INSTANCE_SIGNATURE is not the nested instance" >&2; exit 2; }
+    # Names come from the environment: a path separator or a link could point outside the nested session.
+    case "${WAYLAND_DISPLAY:-}" in
+        ''|*/*) echo "run-harnesses: WAYLAND_DISPLAY must be a plain socket name" >&2; exit 2 ;;
+    esac
+    case "${HYPRLAND_INSTANCE_SIGNATURE:-}" in
+        ''|*/*) echo "run-harnesses: HYPRLAND_INSTANCE_SIGNATURE must be a plain name" >&2; exit 2 ;;
+    esac
+    [ -d "$XDG_RUNTIME_DIR" ] && [ ! -L "$XDG_RUNTIME_DIR" ] || { echo "run-harnesses: $XDG_RUNTIME_DIR is not a directory" >&2; exit 2; }
+    [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ] && [ ! -L "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ] || {
+        echo "run-harnesses: WAYLAND_DISPLAY is not the nested socket (or it is a link)" >&2; exit 2; }
+    [ -d "$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE" ] && [ ! -L "$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE" ] || {
+        echo "run-harnesses: HYPRLAND_INSTANCE_SIGNATURE is not the nested instance (or it is a link)" >&2; exit 2; }
     case "${DBUS_SESSION_BUS_ADDRESS:-}" in
         *yaac-nested/no-bus) ;;
         *) echo "run-harnesses: DBUS_SESSION_BUS_ADDRESS must be the dead nested bus" >&2; exit 2 ;;
@@ -127,7 +139,7 @@ killable() { [ "$os" != Linux ] || ours "$1"; }
 
 # A run must not start while a process of this bundle with this HOME is still alive: its leftovers
 # would be counted as this run's.
-if [ -n "$(app_pids)" ]; then
+if [ "$os" = Linux ] && [ -n "$(app_pids)" ]; then
     echo "run-harnesses: processes of this bundle with this HOME are already running:" >&2
     app_pids >&2
     exit 2
@@ -139,6 +151,8 @@ stage_since=0
 # No process of this bundle may outlive a stage: zygotes and renderers can exit a moment after the
 # browser. Wait up to 10 s, then fail. Kill only the processes that carry this run's HOME.
 leftover() {
+    # macOS: no leftover check, as on main. Its pgrep pattern is not safe to act on.
+    [ "$os" = Linux ] || return 0
     i=0
     while [ -n "$(app_pids "$stage_since")" ] && [ "$i" -lt 10 ]; do sleep 1; i=$((i + 1)); done
     pids=$(app_pids "$stage_since")
