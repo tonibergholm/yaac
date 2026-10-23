@@ -32,7 +32,7 @@ The app builds and runs on Omarchy. The Linux paths, the Linux CEF host, the bun
 
 ## Harness results, headless Ozone (no compositor)
 
-Command: `YAAC_OZONE=headless YAAC_TEST_HOME=<scratch> crates/yaac-app/scripts/run-harnesses.sh` on Omarchy. No display variable is set. Every app run is isolated under `YAAC_TEST_HOME`.
+Command: `YAAC_OZONE=headless YAAC_TEST_HOME=<scratch> crates/yaac-app/scripts/run-harnesses.sh` on Omarchy, at commit `805a6df` (the final runner). No display variable is set. Every app run is isolated under `YAAC_TEST_HOME`.
 
 | Stage | With `ui/dist` | Without `ui/dist` |
 |---|---|---|
@@ -44,7 +44,14 @@ Command: `YAAC_OZONE=headless YAAC_TEST_HOME=<scratch> crates/yaac-app/scripts/r
 | persist write and verify | pass (`HOST ui-assets source=dir`) | pass |
 | persist write on a non-empty dir | exit 2 | exit 2 |
 
-Before the window-size fix below, the engine harness failed at the popup stage. Both runs above are after the fix and after the reviewer's fixes to the runner. (Results of the final commit: see the commit message of the last change in this branch.)
+Both modes: 7 `ok` lines, 0 `FAIL`, 0 leftover-process failures (`run-with-dist.log` and `run-without-dist.log` on Omarchy).
+
+Runner checks at the same commit (VERIFIED):
+- **Another instance survives.** An unrelated headless instance (its own HOME) kept running through a full runner pass. The runner counted none of its processes and killed none.
+- **Refusal.** With an instance using the run's own HOME alive, the runner exits 2 before any stage and names the processes.
+- **Process environment is overwritten.** Chromium rewrites the environment area of its processes on Linux, the browser process included, so `HOME` in `/proc/PID/environ` is not a reliable test after startup. The runner therefore also counts processes of this bundle and this user that started at or after the stage began (start time in `/proc/PID/stat`), and it kills only processes that still carry this run's HOME. Both paths were exercised on a live probe instance.
+
+Before the window-size fix below, the engine harness failed at the popup stage. The runs above are after that fix and after every reviewer fix in this branch.
 
 What this mode does **not** establish: painting, decorations, input, GPU output, the Wayland platform choice, anything the compositor does.
 
@@ -61,7 +68,7 @@ What this mode does **not** establish: painting, decorations, input, GPU output,
 
 ## Review
 
-An independent review of the branch (`code-reviewer`, against `b32c1fd..HEAD`) blocked merge. Fixed:
+Two independent reviews (`code-reviewer`). The first, against `b32c1fd..HEAD`, blocked merge. The second, of the fix commits, found no blocking issue for `c2c9f95`. It asked for `grep -qxF`, which is applied. Its residual question (whether Chromium's process-title rewrite hides `HOME`) was confirmed by the probe, and the start-time fallback in `805a6df` answers it. Fixed after the first review:
 
 - The runner inherited `DISPLAY` and `XAUTHORITY`, so a dead nested session could fall back to the owner's XWayland. Display runs now unset both and force `--ozone-platform=wayland`; the dead-bus and runtime paths point into the test home in headless mode.
 - The leftover check used an unanchored `pkill -f`. It now matches the exact executable path of processes owned by this user (Linux), waits up to 10 s for zygotes to exit, and kills only the PIDs found. macOS keeps `pgrep`.
@@ -69,7 +76,7 @@ An independent review of the branch (`code-reviewer`, against `b32c1fd..HEAD`) b
 - `args()` could panic on non-UTF-8 arguments. The helper check and the argument parser now read raw OS arguments.
 - Stale comments and the architecture sentence about the Ozone flag were corrected. `build()` runs cargo offline.
 
-Not applied, with reasons: the reviewer said the bundle ships `libEGL.so` and `libGLESv2.so`. It does not (bundle listing above, and the CEF tree has neither). `yaac-app-helper` stays built on Linux (harmless, removal is a separate change). `optdepends=gtk3` was not added: nothing in the app loads GTK.
+Not applied, with reasons: the first reviewer said the bundle ships `libEGL.so` and `libGLESv2.so`. It does not (bundle listing above, and the CEF tree has neither). `yaac-app-helper` stays built on Linux (harmless, removal is a separate change). `optdepends=gtk3` was not added: nothing in the app loads GTK.
 
 ## Still to do (needs the owner)
 
