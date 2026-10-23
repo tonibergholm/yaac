@@ -28,4 +28,7 @@ jobs:
           cargo test -p yaac-core --features testing
           cargo test -p yaac-api --features ts
       - name: Generated TypeScript is current
-        run: git diff --exit-code -- ui/src/generated
+        run: |
+          cargo test -p yaac-api --features ts
+          cargo test -p yaac-model --features ts
+          test -z "$(git status --porcelain -- ui/src/generated)"
