@@ -106,12 +106,29 @@ The run-harnesses display mode stays guarded on purpose. For option A the owner 
 - Package: `packaging/arch/{PKGBUILD,yaac.desktop,yaac.svg}` (the SVG is a placeholder icon).
 - No public signature in `yaac-core`, `yaac-engine` or `yaac-api` changed.
 
+## Review questions, answered by observation (headless Ozone, Omarchy, 17:20 to 17:40)
+
+- **Q2, sandboxed processes and the leftover check: VERIFIED, not a problem here.** A headless shell run (debug bundle) had 11 processes with the bundle's executable. `ps` lists the same 11; the runner's `app_pids` returns the same 11. Every one, including the renderers with `Seccomp: 2`, is owned by `toni` in `/proc` (`stat`), so the `-O` check does not hide them. The root-owned case from the review did not occur for these processes (the `/proc/PID` owner is the user for non-dumpable children too, observed).
+- **Q3, which process carried HOME: VERIFIED for one run, the earlier observation not reproduced.** In a 20 s headless run all 11 processes carried `HOME=` in `/proc/PID/environ`. In an earlier 15 s probe the browser process did not. The refusal run's two PIDs were not recorded, so which process it found is not known. The start-time fallback stays as the safety net.
+- **Q4, `--type=bogus`: VERIFIED, it aborts.** With `ulimit -c 0` the process ends with SIGTRAP (exit 133, a fatal CEF check). `coredumpctl` records the event with `Storage: none`, so no dump file was kept. A fix is not in: a parent-process check would reject the sandboxed renderers, whose `getppid()` is 0 inside their PID namespace (INFERRED from the namespace layout, not tested). Remaining.
+- **Q5, libEGL and libGLESv2: VERIFIED.** `pacman -Qo` gives `libglvnd 1.7.0-3` for both, and `vulkan-icd-loader` for libvulkan. The PKGBUILD comments stay as written.
+- **Q6, `~/.pki` in the real home: VERIFIED for the RPC harness.** `/home/toni/.pki` was absent before and after a run with an isolated HOME, and the isolated home got none either. Other stages were not checked.
+
+## PKGBUILD check (item 6)
+
+- **prepare(): VERIFIED** by `makepkg -o -d` as an unprivileged user, in a temp copy, with a `pnpm` shim (npx pnpm@12) and no install. The CEF layout (`libcef.so`, `locales`, `LICENSE.txt`, `CREDITS.html`, `archive.json`) and the UI dependencies were produced. `cargo fetch` was not logged separately.
+- **package(): VERIFIED under fakeroot** by running the PKGBUILD's own `package()` against the prebuilt release bundle. Everything is `root:root`, `chrome-sandbox` is `0755` and not setuid, the three licence files are under `/usr/share/licenses/yaac/`, and `/usr/bin/yaac-app` links to `/usr/lib/yaac/yaac-app`. `libcef.so` is 1.4 GB uncompressed.
+- **build(): NOT run.** The release build needs more free RAM than this machine had (about 550 MB free, 6 GB available) and the owner's session needs it. Not verified: that the release build compiles inside `makepkg`.
+
+## PR description (PR #14, `m2/linux`)
+
+M2: the walking skeleton on Linux (Omarchy, Hyprland, Wayland). The Linux paths, the Linux CEF host (helpers are the same executable, Ozone chosen explicitly, sandbox on, the release password store explicit), the bundle, the harness runner and the Arch package. Verified only headless (Chromium's headless Ozone platform, no compositor): the harness suite passes with and without `ui/dist`, and the macOS suite passes on the Mac. Not verified: painting, decorations, input, the GPU path and the Wayland platform on Hyprland. Those need the owner at his machine (`scripts/live-session-check.sh`). Not done: see the list below.
+
 ## Remaining after the review (not done, in priority order)
 
-- **Privacy blocker for a release build (item 8).** The release store is still the default. Required: pass `--password-store=gnome-libsecret` explicitly in release builds and log the store in use. Until then a release on a desktop Chromium does not recognise can fall back to the basic store (fixed key, `v10`). `cookie-store-check.sh` exists; the owner runs it after a release run (`v11` expected).
-- **Item 4:** the Ozone choice is still in `yaac-cef`; the move to a pure function in `yaac-platform` is not done.
-- **Item 5:** app id (`linux_window_properties`, `yaac`) and `StartupWMClass=yaac` are not done. The desktop file still says `cef`.
-- **Item 6:** PKGBUILD: `xdg-desktop-portal` to `optdepends`, licence files to `/usr/share/licenses/yaac/`, the libEGL/libGLESv2 claim checked with `pacman -Qo`, and an unprivileged `makepkg` test with `bsdtar -tvf` are not done. Only the build directory moved to `target/bundle-pkg`.
-- **Item 9 (review questions):** Q2 to Q6 are not answered by observation yet.
-- **Live check:** `live-session-check.sh` was tested only by its dry run and by its refusal outside a session. It has not run in a Wayland session.
-- **Linux suites:** the headless suite with `ui/dist` passes every stage at `0be831d` (after the runner and platform changes). The run without `ui/dist` was not repeated in this time-box. The macOS suite passes at `668c951` (its runner state, before the doc-only commits): all stages ok, self-test exit 1, persistence ok.
+- **Q4 fix:** `--type=<unknown>` aborts in CEF. A fix must not reject sandboxed children (see Q4).
+- **Privacy, release store:** the explicit `gnome-libsecret` is in (coordinator). Still needed: the cookie check on a release bundle (`cookie-store-check.sh`, expect `v11`), run by the owner.
+- **Headless without `ui/dist`:** not repeated at this head.
+- **Live check:** `live-session-check.sh` has only run its dry run and its refusal outside a session.
+- **Package build:** the release `makepkg` build was not run (RAM).
+
