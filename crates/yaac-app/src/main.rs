@@ -172,7 +172,7 @@ fn main() -> ExitCode {
     let settings = EngineSettings {
         data_dir: data_dir.clone(),
         log_file: paths.logs.join("cef.log"),
-        ui_assets: host::ui_assets(),
+        ui_assets: host::ui_assets(mode),
         rpc,
         rpc_runtime: runtime.handle().clone(),
         events: events_tx,

@@ -38,9 +38,13 @@ impl MainThread for CefMainThread {
 ///
 /// Release builds serve only the copy compiled into the binary. Development builds use `YAAC_UI_DIR`
 /// or the workspace `ui/dist`, and fall back to the harness placeholder when there is no build.
-pub fn ui_assets() -> Arc<dyn UiAssets> {
+///
+/// The harness modes always use the placeholder page, so their results do not depend on whether
+/// `ui/dist` happens to be built.
+pub fn ui_assets(mode: crate::Mode) -> Arc<dyn UiAssets> {
     #[cfg(not(yaac_dev))]
     {
+        let _ = mode;
         match yaac_cef::embedded_ui() {
             Some(assets) => assets,
             None => panic!("this build has no embedded UI"),
@@ -48,6 +52,12 @@ pub fn ui_assets() -> Arc<dyn UiAssets> {
     }
     #[cfg(yaac_dev)]
     {
+        if matches!(
+            mode,
+            crate::Mode::EngineHarness | crate::Mode::RpcHarness | crate::Mode::QuitHarness
+        ) {
+            return Arc::new(yaac_cef::EmbeddedAssets::new(harness::HARNESS_FILES));
+        }
         let dir = std::env::var_os("YAAC_UI_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
