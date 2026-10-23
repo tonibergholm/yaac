@@ -1,0 +1,46 @@
+Aside static inventory (names only), 2026-10-23
+Scope per coordinator: interface names only. Raw extractions are in $TMPDIR/re/aside and are not in the repo.
+Labels: VERIFIED = seen as a string or symbol name in the binary; INFERRED = reasoned from the names.
+
+## Binaries (file, lipo, otool -L)
+Aside (main, 72 KB): Mach-O 64-bit executable arm64, single arch. Links only /usr/lib/libSystem.B.dylib. VERIFIED.
+  It is a launcher: it loads "Aside Framework.framework". INFERRED from the framework layout.
+aside-daemon ("Aside Daemon.app", bundle id at.studio.AsideBrowser.daemon, version 1.26.1023): Mach-O arm64 executable.
+  Links CoreFoundation, Security, libc++, libSystem. VERIFIED.
+  Its strings include Node.js runtime flag names and a native addon named aside-native.node. Runtime is Node.js based. INFERRED.
+Aside Framework (239 MB): Mach-O arm64 dylib. Chromium UA string "Chrome/154.0.8037.100" is present. Chromium 154 INFERRED.
+
+## Interface names found (VERIFIED as strings; names only)
+Environment variables with prefix ASIDE_ in the daemon:
+  ASIDE_API_BASE_URL, ASIDE_API_URL, ASIDE_API_TIMEOUT, ASIDE_BROWSER_CDP_HOST, ASIDE_BROWSER_CDP_PORT,
+  ASIDE_BROWSER_APP_NAME, ASIDE_BROWSER_BUNDLE_ID, ASIDE_BROWSER_SKILL_NAME, ASIDE_CLI_INSTALL_DIR,
+  ASIDE_CLI_INSTALLER_PATH, ASIDE_CLI_CANDIDATE_PATHS, ASIDE_CLI_EXPECTED_PUBLISHER, ASIDE_CLI_UPDATE_CHECK,
+  ASIDE_CLI_RELEASE_FETCH_TIMEOUT_MS, ASIDE_CLI_VERSION_TIMEOUT_MS, ASIDE_COMPUTER_USE_RUNTIME, ASIDE_ADBLOCK_ENGINE.
+  (ASIDE_CLI_AUTH_PATH is documented, not seen in this binary search.)
+CLI install candidate directories (strings): ~/.local/bin, ~/.aside/bin. VERIFIED strings; INFERRED that these are where
+  the CLI would be placed. Neither exists on this Mac.
+MCP-related identifiers in the daemon: many names beginning Mcp (McpManager, McpOAuthProvider, McpStdioConnectionError,
+  McpHttpError, mcpServers, mcp__ prefix). VERIFIED. INFERRED: the daemon is an MCP client that connects to external MCP
+  servers (the mcpServers config key), in addition to whatever server role `aside mcp` plays. The strings do not show
+  which role `aside mcp` uses.
+MCP method names found as strings in the daemon: initialize, tools/list, tools/call, notifications/initialized,
+  resources/list. prompts/list was not found. VERIFIED as strings (grep -F counts). Which role (client or server) uses
+  them was not determined. INFERRED: they come from an MCP SDK bundled with the daemon.
+Scripting dictionary (Resources/scripting.sdef): 5 class entries; AppleScript command names: open, close, go back,
+  go forward, reload, stop, view source, execute, save, print, select all, copy selection, cut selection,
+  paste selection, undo, redo, delete, duplicate, move, make, count, exists, quit. VERIFIED (names only).
+  The sdef is a second automation surface gated by macOS Automation consent. Not invoked.
+
+## Entitlements (codesign -d --entitlements :-, names only)
+Main app: com.apple.developer.web-browser.public-key-credential, audio-input, bluetooth, camera, print, usb,
+  personal-information.location, photos-library, keychain-access-groups (cryptography, devicetrust,
+  secure-payment-confirmation, unexportable-keys, webauthn, webauthn-uvk). VERIFIED.
+Daemon: allow-jit, allow-unsigned-executable-memory, disable-library-validation, keychain-access-groups
+  (cryptography). VERIFIED. Note: disable-library-validation on the daemon.
+Code signature (main app): Developer ID Application, team 8CPD4K4TBB, runtime flags kill, restrict,
+  library-validation, runtime. Notarization ticket stapled. VERIFIED.
+
+## Divergence between static and runtime
+- Static: the daemon binary has JS runtime strings. Runtime: the daemon process is "Aside Daemon", listens on loopback TCP
+  21420. Consistent. No divergence found yet.
+- Static: MCP client identifiers exist. Runtime: `aside mcp` could not be run, so the server side is unverified.
