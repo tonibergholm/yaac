@@ -33,6 +33,10 @@ pub(crate) fn window_number(_browser: &Browser) -> Option<isize> {
 /// crash CEF (CEF issue #4020), and an explicit value does not depend on the session variables a
 /// desktop entry or a service may lack.
 pub(crate) fn add_platform_switches(command_line: &mut CommandLine) {
+    // An explicit --ozone-platform on the command line (a development run) wins.
+    if command_line.has_switch(Some(&CefString::from("ozone-platform"))) != 0 {
+        return;
+    }
     let display = std::env::var_os("WAYLAND_DISPLAY");
     let runtime = std::env::var_os("XDG_RUNTIME_DIR");
     let platform = ozone_platform(display.as_deref(), runtime.as_deref(), |path| path.exists());
