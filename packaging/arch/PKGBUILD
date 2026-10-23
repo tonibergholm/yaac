@@ -1,0 +1,133 @@
+# Development package for yaac (Linux, Omarchy target). Not a release.
+#
+# Sources:
+#   - yaac: the git repository (the default branch).
+#   - CEF: the minimal linux64 distribution of CEF 154.0.34 (the version cef-rs 154.5.0 binds),
+#     from the Spotify CEF builds index. The sha1 of the archive is verified against the index,
+#     `15c91ad767097217b2e82ba8b933fe30b134be69`. The index has no sha256, so the sha256 below was
+#     computed locally from the sha1-verified download.
+#
+# Network: prepare() fetches the crates and the npm packages (`cargo fetch --locked`, `pnpm install`).
+# build() and package() use no network. CEF is a source entry, so makepkg fetches and extracts it.
+#
+# Sandbox: CEF's renderer sandbox uses user namespaces. The kernel must allow unprivileged user
+# namespaces (Arch default). chrome-sandbox is installed but does NOT need to be setuid: it was not
+# needed on the Omarchy test machine (observed in docs/spikes/e2-cefclient-hyprland.md). Do not
+# install a setuid helper and do not pass --no-sandbox.
+#
+# Runtime libraries: `depends` lists the packages the app and libcef.so link against (checked
+# against `ldd` of the bundle). libEGL and libGLESv2 are loaded at run time from libglvnd, and the
+# Vulkan loader from vulkan-icd-loader. PipeWire (screen sharing) is not needed yet.
+
+pkgname=yaac-git
+pkgver=0.0.0.r0.g0000000
+pkgrel=1
+pkgdesc='Arc-like browser: Chromium through CEF, Rust core, web UI (development build)'
+arch=('x86_64')
+url='https://github.com/tonibergholm/yaac'
+license=('GPL-3.0-or-later')
+depends=(
+  'alsa-lib'
+  'at-spi2-core'
+  'cairo'
+  'dbus'
+  'expat'
+  'glib2'
+  'glibc'
+  'gcc-libs'
+  'libcups'
+  'libdrm'
+  'libglvnd'
+  'libsecret'
+  'libx11'
+  'libxcb'
+  'libxcomposite'
+  'libxdamage'
+  'libxext'
+  'libxfixes'
+  'libxkbcommon'
+  'libxrandr'
+  'mesa'
+  'nspr'
+  'nss'
+  'pango'
+  'systemd-libs'
+  'vulkan-icd-loader'
+)
+optdepends=(
+  'xdg-desktop-portal: file dialogs (not used yet)'
+)
+makedepends=(
+  'cargo'
+  'clang'
+  'cmake'
+  'git'
+  'ninja'
+  'nodejs'
+  'pnpm'
+)
+provides=('yaac')
+conflicts=('yaac')
+options=('!lto')
+_cef_name='cef_binary_154.0.34+g14c5a08+chromium-154.0.8037.98_linux64_minimal'
+source=(
+  'yaac::git+https://github.com/tonibergholm/yaac.git'
+  "cef-minimal.tar.bz2::https://cef-builds.spotifycdn.com/cef_binary_154.0.34%2Bg14c5a08%2Bchromium-154.0.8037.98_linux64_minimal.tar.bz2"
+)
+sha256sums=(
+  'SKIP'
+  'e87e2c76304372dd28b899ceb6efa4b353f52700594ddc358a8237ec07ec6492'
+)
+
+pkgver() {
+  cd yaac
+  printf '0.0.0.r%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  cd yaac
+  cargo fetch --locked
+  (cd ui && pnpm install --frozen-lockfile)
+
+  # The CEF layout the build expects (cef-dll-sys, download-cef): the runtime files at the top of
+  # $CEF_PATH/<version>/cef_linux_x86_64, as download-cef flattens Release/ and Resources/. The
+  # archive.json written here makes cef-dll-sys accept the tree, so it never downloads.
+  local dist="$srcdir/cef/154.0.34/cef_linux_x86_64"
+  rm -rf "$srcdir/cef"
+  mkdir -p "$dist"
+  cp -a "$srcdir/$_cef_name/." "$dist/"
+  mv "$dist"/Release/* "$dist"/ && rmdir "$dist/Release"
+  mv "$dist"/Resources/* "$dist"/ && rmdir "$dist/Resources"
+  printf '%s\n' \
+    '{' \
+    '  "type": "minimal",' \
+    "  \"name\": \"$_cef_name.tar.bz2\"," \
+    '  "sha1": "15c91ad767097217b2e82ba8b933fe30b134be69"' \
+    '}' > "$dist/archive.json"
+}
+
+build() {
+  cd yaac
+  export CEF_PATH="$srcdir/cef"
+  # Crates were fetched in prepare(); the build must not touch the network.
+  export CARGO_NET_OFFLINE=true
+  (cd ui && pnpm build)
+  # Assembles the same runtime layout as the development bundle, with the UI embedded.
+  YAAC_BUNDLE_NO_UI=1 PROFILE=release BUNDLE_OUT="$srcdir/yaac/target/bundle-pkg" \
+    ./crates/yaac-app/scripts/bundle-linux.sh
+}
+
+package() {
+  cd yaac
+  install -dm755 "$pkgdir/usr/lib/yaac"
+  cp -a "$srcdir/yaac/target/bundle-pkg/." "$pkgdir/usr/lib/yaac/"
+  install -dm755 "$pkgdir/usr/bin"
+  ln -s /usr/lib/yaac/yaac-app "$pkgdir/usr/bin/yaac-app"
+  install -Dm644 packaging/arch/yaac.desktop "$pkgdir/usr/share/applications/yaac.desktop"
+  install -Dm644 packaging/arch/yaac.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/yaac.svg"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/yaac/LICENSE"
+  # CEF's licence and the third-party credits (Chromium and its dependencies) that the bundle ships.
+  local cef="$srcdir/cef/154.0.34/cef_linux_x86_64"
+  install -Dm644 "$cef/LICENSE.txt" "$pkgdir/usr/share/licenses/yaac/CEF-LICENSE.txt"
+  install -Dm644 "$cef/CREDITS.html" "$pkgdir/usr/share/licenses/yaac/CEF-CREDITS.html"
+}

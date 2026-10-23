@@ -26,6 +26,7 @@ wrap_window_delegate! {
             let Some(window) = window else { return };
             let mut root = View::from(&self.root);
             window.add_child_view(Some(&mut root));
+            crate::os::fit_window(window, self.width, self.height);
             window.show();
         }
 
@@ -35,6 +36,10 @@ wrap_window_delegate! {
 
         fn can_close(&self, _window: Option<&mut Window>) -> i32 {
             i32::from(ui::can_close_window(self.window))
+        }
+
+        fn linux_window_properties(&self, _window: Option<&mut Window>, properties: Option<&mut LinuxWindowProperties>) -> i32 {
+            properties.map_or(0, crate::os::fill_window_properties)
         }
 
         fn window_runtime_style(&self) -> RuntimeStyle {

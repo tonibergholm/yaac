@@ -37,6 +37,29 @@ Not done or failing:
 - Release bundle (`PROFILE=release`): not built and run here.
 - Run without `ui/dist`: not run in this round.
 
+## Linux (M2, Omarchy)
+
+Same app, Linux build. The CEF helper processes are this executable re-run with `--type=...`, and
+`main` handles them first. Layout and status: `docs/spikes/m2-linux-omarchy.md`.
+
+```sh
+# CEF: the minimal linux64 distribution of 154.0.34, extracted and flattened as download-cef does
+# (Release/ and Resources/ moved up), with an archive.json, at
+#   $CEF_PATH/154.0.34/cef_linux_x86_64
+CEF_PATH=$HOME/yaac-m2-cache/cef crates/yaac-app/scripts/bundle-linux.sh   # target/bundle-linux/
+YAAC_OZONE=headless YAAC_TEST_HOME=$HOME/yaac-m2-cache/run \
+    crates/yaac-app/scripts/run-harnesses.sh                                # no compositor
+```
+
+`YAAC_OZONE=headless` runs every stage on Chromium's headless Ozone platform with no display
+variables set. It checks the engine and the harness verdicts. It does not check painting, window
+decorations or input. Display runs need a nested headless session; the runner refuses to start
+outside one. The Ozone platform is chosen by the app: `wayland` when the Wayland socket is reachable,
+`x11` otherwise (lowercase, always set). Development builds accept `--ozone-platform=<value>` to
+override it.
+
+Packaging: `packaging/arch/PKGBUILD` (`yaac-git`). Sandbox: user namespaces, no setuid helper.
+
 ## Run everything
 
 `crates/yaac-app/scripts/bundle-macos.sh` then `crates/yaac-app/scripts/run-harnesses.sh` runs the four harnesses, the harness self-test (a forced failure after the window closes must exit non-zero) and the restart persistence check. It exits non-zero on any failure.

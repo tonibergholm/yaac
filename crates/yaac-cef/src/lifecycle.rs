@@ -56,8 +56,11 @@ wrap_app! {
             // only, and only with an explicit YAAC_MOCK_KEYCHAIN=1. Release builds never use it.
             if mock_keychain_allowed() {
                 eprintln!("yaac: WARNING mock keychain in use; profile data is not protected");
-                command_line.append_switch(Some(&CefString::from("use-mock-keychain")));
+                crate::os::add_mock_keychain(command_line);
+            } else {
+                crate::os::add_secure_store(command_line);
             }
+            crate::os::add_platform_switches(command_line);
             command_line.append_switch_with_value(
                 Some(&CefString::from("disable-features")),
                 Some(&CefString::from(
@@ -112,9 +115,9 @@ pub fn run_browser(
         return 1;
     }
     let log_file = settings.log_file.clone();
-    let _library = crate::macos::load_framework(&exe, false);
+    let _library = crate::os::load_framework(&exe, false);
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
-    crate::macos::setup_application();
+    crate::os::setup_application();
 
     let engine = Arc::new(CefEngine::new(settings));
     open_gate();
@@ -171,12 +174,17 @@ pub fn run_browser(
     code
 }
 
-/// Runs a helper (renderer, GPU, utility) process. Returns the process exit code.
+/// Runs a helper (renderer, GPU, utility, zygote) process. Returns the process exit code.
+///
+/// On macOS the helper is a separate bundled binary. On Linux the helpers are this same
+/// executable, re-run with `--type=...`, so the app must call this before anything else in `main`
+/// (before it parses arguments, creates directories or starts a thread): a multi-threaded process
+/// cannot start the zygote's user-namespace sandbox.
 pub fn run_helper() -> i32 {
     let exe = std::env::current_exe().expect("current_exe");
     let args = cef::args::Args::new();
-    let _sandbox = crate::macos::helper_sandbox(&args);
-    let _library = crate::macos::load_framework(&exe, true);
+    let _sandbox = crate::os::helper_sandbox(&args);
+    let _library = crate::os::load_framework(&exe, true);
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
     let mut app = YaacApp::new(None);
     execute_process(

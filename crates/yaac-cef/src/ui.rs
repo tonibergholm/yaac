@@ -518,6 +518,26 @@ wrap_task! {
 }
 
 fn log_layout(window: WindowId) {
+    // The window and its root panel, so a zero-height view can be traced to the layout above it.
+    let frame = with(|s| {
+        let entry = s.windows.get(&window)?;
+        Some((View::from(&entry.root), entry.window.clone()))
+    });
+    if let Some((root, win)) = frame {
+        let rect = root.bounds();
+        let size = win.map(|w| {
+            let s = ImplView::size(&w);
+            format!("{}x{}", s.width, s.height)
+        });
+        elog!(
+            "layout root window={window} bounds={},{} {}x{} window_size={}",
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            size.unwrap_or_else(|| "none".into())
+        );
+    }
     let rows = with(|s| {
         let entry = s.windows.get(&window)?;
         Some(
@@ -536,12 +556,15 @@ fn log_layout(window: WindowId) {
         let handle = View::from(&browser_view);
         let rect = handle.bounds();
         let visible = handle.is_visible() != 0;
+        let pref = handle.preferred_size();
         elog!(
-            "layout window={window} view={id} kind={kind:?} visible={visible} bounds={},{} {}x{}",
+            "layout window={window} view={id} kind={kind:?} visible={visible} bounds={},{} {}x{} preferred={}x{}",
             rect.x,
             rect.y,
             rect.width,
-            rect.height
+            rect.height,
+            pref.width,
+            pref.height
         );
     }
 }
@@ -573,7 +596,7 @@ pub(crate) fn browser_created(view: ViewId, browser: Browser) {
             entry.counted = true;
         }
     });
-    let native = crate::macos::window_number(&browser)
+    let native = crate::os::window_number(&browser)
         .map(|n| n.to_string())
         .unwrap_or_else(|| "none".into());
     elog!("browser created view={view} kind={kind:?} browser={browser_id} native_window={native}");

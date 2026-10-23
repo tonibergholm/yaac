@@ -11,12 +11,43 @@ mod selftest;
 mod site;
 
 use host::{CefMainThread, CoreRpc};
-use std::path::{Path, PathBuf};
+#[cfg(yaac_dev)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc::unbounded_channel;
 use yaac_cef::{EngineSettings, RpcHandler};
-use yaac_platform::{AppPaths, MacPlatform, Platform, ensure_private_dir};
+#[cfg(target_os = "linux")]
+use yaac_platform::LinuxPlatform;
+#[cfg(target_os = "macos")]
+use yaac_platform::MacPlatform;
+use yaac_platform::{AppPaths, Platform, ensure_private_dir};
+
+/// Linux runs its CEF helper processes (zygote, renderer, GPU, utility) as this executable with
+/// `--type=...`. They must be handled before anything else here, see `yaac_cef::run_helper`. The
+/// macOS helper is a separate bundled binary, so there is nothing to do here.
+#[cfg(target_os = "linux")]
+fn helper_exit() -> Option<ExitCode> {
+    // Raw bytes: a non-UTF-8 argument must not panic before CEF sees it.
+    if std::env::args_os().any(|arg| arg.as_encoded_bytes().starts_with(b"--type=")) {
+        return Some(ExitCode::from(yaac_cef::run_helper() as u8));
+    }
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn helper_exit() -> Option<ExitCode> {
+    None
+}
+
+fn host_paths() -> AppPaths {
+    #[cfg(target_os = "macos")]
+    let paths = MacPlatform.paths();
+    #[cfg(target_os = "linux")]
+    let paths = LinuxPlatform.paths();
+    paths
+}
 
 /// What this run does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +91,9 @@ impl Mode {
                 "--persist-write" => Mode::PersistWrite,
                 #[cfg(yaac_dev)]
                 "--persist-verify" => Mode::PersistVerify,
+                // Development runs only: CEF reads this from the process arguments, which picks the
+                // Ozone platform (for example `headless`, which needs no compositor).
+                other if cfg!(yaac_dev) && other.starts_with("--ozone-platform=") => mode,
                 other => return Err(format!("unknown argument {other}")),
             };
         }
@@ -116,7 +150,14 @@ fn is_empty_or_missing(dir: &Path) -> Result<bool, String> {
 }
 
 fn main() -> ExitCode {
-    let mode = match Mode::from_args(std::env::args().skip(1)) {
+    if let Some(code) = helper_exit() {
+        return code;
+    }
+    let mode = match Mode::from_args(
+        std::env::args_os()
+            .skip(1)
+            .map(|a| a.to_string_lossy().into_owned()),
+    ) {
         Ok(mode) => mode,
         Err(message) => {
             eprintln!("yaac-app: {message}");
@@ -124,7 +165,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let paths = MacPlatform.paths();
+    let paths = host_paths();
     let data_dir = match data_dir_for(mode, &paths) {
         Ok(dir) => dir,
         Err(message) => {
