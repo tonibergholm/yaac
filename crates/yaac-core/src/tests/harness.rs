@@ -1,8 +1,10 @@
 //! Shared helpers for the `CoreHandle` tests.
 
+use crate::clock::{Clock, SystemClock};
 use crate::testing::FakeStore;
-use crate::{CoreHandle, EngineEventSender, Principal, spawn};
-use std::sync::Arc;
+use crate::{CoreHandle, EngineEventSender, Principal, spawn_with_clock};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use yaac_api::{
     API_VERSION, ApiError, ApiResult, Body, Command, NodeView, Placement, Query, Request,
     ResponseBody, Snapshot,
@@ -23,9 +25,15 @@ pub(super) struct Rig {
 
 impl Rig {
     pub(super) fn start(store: FakeStore) -> Self {
+        Self::start_on(store, Arc::new(SystemClock))
+    }
+
+    /// Starts the core on `clock`. Tests keep their own handle to a `ManualClock` and move it.
+    pub(super) fn start_on(store: FakeStore, clock: Arc<dyn Clock>) -> Self {
         let engine = FakeEngine::new();
         let (handle, events_in) =
-            spawn(Box::new(store.clone()), Arc::new(engine.clone())).expect("the core starts");
+            spawn_with_clock(Box::new(store.clone()), Arc::new(engine.clone()), clock)
+                .expect("the core starts");
         let startup = engine.take_commands();
         let sidebar = startup
             .iter()
@@ -166,4 +174,27 @@ pub(super) fn rev_of(body: &ResponseBody) -> u64 {
 
 pub(super) fn space_of(snapshot: &Snapshot) -> SpaceId {
     snapshot.active_space
+}
+
+/// A clock that moves only when a test moves it.
+pub(super) struct ManualClock {
+    now: Mutex<Instant>,
+}
+
+impl ManualClock {
+    pub(super) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            now: Mutex::new(Instant::now()),
+        })
+    }
+
+    pub(super) fn advance(&self, by: Duration) {
+        *self.now.lock().expect("the clock lock") += by;
+    }
+}
+
+impl Clock for ManualClock {
+    fn now(&self) -> Instant {
+        *self.now.lock().expect("the clock lock")
+    }
 }

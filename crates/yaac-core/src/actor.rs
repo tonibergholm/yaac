@@ -6,6 +6,7 @@
 //! one batch per `FLUSH_INTERVAL`, and always before the next command's commit and at shutdown.
 
 use crate::auth;
+use crate::clock::Clock;
 use crate::commands;
 use crate::error::{conflict, internal};
 use crate::events::{self, Step};
@@ -106,6 +107,7 @@ pub(crate) struct Actor {
     events: broadcast::Sender<Event>,
     /// Coalesced node writes not yet persisted. The last value per node wins.
     pending: BTreeMap<NodeId, Node>,
+    clock: Arc<dyn Clock>,
 }
 
 impl Actor {
@@ -114,6 +116,7 @@ impl Actor {
         store: std_mpsc::Sender<StoreJob>,
         engine: Arc<dyn EngineHandle>,
         events: broadcast::Sender<Event>,
+        clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             state,
@@ -121,6 +124,7 @@ impl Actor {
             engine,
             events,
             pending: BTreeMap::new(),
+            clock,
         }
     }
 
@@ -149,6 +153,7 @@ impl Actor {
                     }
                 }
             }
+            self.check_stall().await;
         }
         if let Err(error) = self.flush().await {
             tracing::warn!("coalesced writes not flushed at shutdown: {error}");
@@ -188,7 +193,8 @@ impl Actor {
     async fn on_engine_event(&mut self, event: EngineEvent) -> bool {
         let closing =
             matches!(&event, EngineEvent::WindowClosing { window } if *window == self.state.window);
-        let stop = match events::on_engine_event(&self.state, event) {
+        let now = self.clock.now();
+        let stop = match events::on_engine_event(&self.state, event, now) {
             Step::Ignore => false,
             Step::Stop => true,
             Step::Plan(plan) => {
@@ -202,6 +208,16 @@ impl Actor {
             tracing::warn!("coalesced writes not flushed on close: {error}");
         }
         stop
+    }
+
+    /// Reports a close that has gone unconfirmed for too long. Runs after every inbox item and tick, so
+    /// the check also happens while the window is otherwise idle.
+    async fn check_stall(&mut self) {
+        if let Some(plan) = events::stalled(&self.state, self.clock.now())
+            && let Err(error) = self.commit(plan).await
+        {
+            tracing::warn!("stalled-close report not recorded: {}", error.message);
+        }
     }
 
     /// Commit before effect. A plan that is not coalesced first persists the pending writes with its

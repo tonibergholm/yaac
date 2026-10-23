@@ -6,7 +6,8 @@ use crate::StoreOp;
 use crate::error::{bad_request, internal, not_found, tree as tree_error};
 use crate::navigation::NavTrack;
 use crate::urls::{self, SIDEBAR_URL};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 use yaac_api::{ApiError, ContainerView, NodeView, Placement, Snapshot, SpaceView, Topic};
 use yaac_engine::{EngineCommand, ViewKind, ViewSpec};
@@ -33,8 +34,13 @@ pub(crate) struct State {
     pub(crate) last_selected: BTreeMap<SpaceId, NodeId>,
     /// Set by `WindowClosing`. A closing window issues no engine commands and recreates nothing.
     pub(crate) closing: bool,
-    /// Consecutive sidebar creations that failed since the last sidebar `Created`.
-    pub(crate) sidebar_failures: u32,
+    pub(crate) closing_since: Option<Instant>,
+    /// Whether the stalled-close warning has been logged for this close.
+    pub(crate) closing_warned: bool,
+    /// The sidebar view and when it reported `Created`.
+    pub(crate) sidebar_alive_since: Option<(ViewId, Instant)>,
+    /// When each recent sidebar recreation was issued.
+    pub(crate) sidebar_recreations: VecDeque<Instant>,
 }
 
 /// One transaction's result: the next state, the store ops, the engine commands (sent only after the
@@ -441,12 +447,21 @@ impl Tx {
         self.state.sidebar_views.remove(&view);
     }
 
-    pub(crate) fn begin_closing(&mut self) {
+    pub(crate) fn begin_closing(&mut self, now: Instant) {
         self.state.closing = true;
+        self.state.closing_since = Some(now);
     }
 
-    pub(crate) fn set_sidebar_failures(&mut self, failures: u32) {
-        self.state.sidebar_failures = failures;
+    pub(crate) fn mark_closing_warned(&mut self) {
+        self.state.closing_warned = true;
+    }
+
+    pub(crate) fn set_sidebar_alive_since(&mut self, alive: Option<(ViewId, Instant)>) {
+        self.state.sidebar_alive_since = alive;
+    }
+
+    pub(crate) fn set_sidebar_recreations(&mut self, recreations: VecDeque<Instant>) {
+        self.state.sidebar_recreations = recreations;
     }
 
     /// Creates the content view of a node, starting on `url`, and shows it when asked.

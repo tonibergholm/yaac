@@ -1,6 +1,7 @@
 //! Behavior through `CoreHandle`, against `FakeEngine` and `FakeStore`.
 
 use super::harness::*;
+use crate::events::CLOSE_STALL;
 use crate::testing::FakeStore;
 use crate::{Principal, StoreOp};
 use std::time::{Duration, Instant};
@@ -1468,58 +1469,6 @@ async fn ui_refused(rig: &Rig, view: ViewId) -> bool {
 }
 
 #[tokio::test]
-async fn quitting_a_window_recreates_nothing_and_flushes_the_store() {
-    let rig = Rig::empty();
-    let view = last_content_view(&rig.startup).expect("the tab has a view");
-    let tab = all_nodes(&rig.snapshot().await)[0].id;
-    rig.emit(EngineEvent::Navigated {
-        view,
-        nav_gen: 1,
-        url: "https://quit.example".to_owned(),
-    })
-    .await;
-    rig.emit(EngineEvent::TitleChanged {
-        view,
-        nav_gen: 1,
-        title: "Quitting".to_owned(),
-    })
-    .await;
-    rig.engine.take_commands();
-    let window = rig.snapshot().await.window;
-
-    // The engine's quit order: closing, then each view's close, then the window.
-    rig.events_in.send(EngineEvent::WindowClosing { window });
-    rig.events_in
-        .send(EngineEvent::Closed { view: rig.sidebar });
-    rig.events_in.send(EngineEvent::Closed { view });
-    rig.events_in.send(EngineEvent::WindowClosed { window });
-    let response = rig
-        .handle
-        .request(
-            rig.ui(),
-            Request {
-                v: API_VERSION,
-                id: 12,
-                body: Body::Query(Query::Snapshot),
-            },
-        )
-        .await;
-    assert!(matches!(
-        response.result,
-        ApiResult::Err { error } if error.code == ErrorCode::Unavailable
-    ));
-
-    assert!(
-        rig.engine.take_commands().is_empty(),
-        "no CreateView or Close during quit"
-    );
-    let flushed = rig.batches().into_iter().flatten().any(
-        |op| matches!(op, StoreOp::UpsertNode(node) if node.id == tab && node.title == "Quitting"),
-    );
-    assert!(flushed, "the pending title was flushed");
-}
-
-#[tokio::test]
 async fn commands_that_create_or_select_views_conflict_while_the_window_closes() {
     let rig = Rig::empty();
     let space = space_of(&rig.snapshot().await);
@@ -1592,59 +1541,6 @@ async fn create_failed_for_a_selected_content_view_keeps_the_selection_and_unliv
 }
 
 #[tokio::test]
-async fn a_sidebar_that_cannot_be_created_is_retried_twice_and_then_abandoned() {
-    let rig = Rig::empty();
-    let first = rig.sidebar;
-
-    rig.events_in
-        .send(EngineEvent::CreateFailed { view: first });
-    settle(&rig).await;
-    let second = sidebar_created(&rig.engine.take_commands());
-    assert!(
-        ui_refused(&rig, first).await,
-        "the failed sidebar id is refused"
-    );
-
-    rig.events_in
-        .send(EngineEvent::CreateFailed { view: second });
-    settle(&rig).await;
-    let third = sidebar_created(&rig.engine.take_commands());
-    assert!(ui_refused(&rig, second).await);
-
-    rig.events_in
-        .send(EngineEvent::CreateFailed { view: third });
-    settle(&rig).await;
-    assert!(
-        rig.engine.take_commands().is_empty(),
-        "the third failure stops the retries"
-    );
-    assert!(ui_refused(&rig, third).await);
-    assert!(ui_refused(&rig, second).await);
-}
-
-#[tokio::test]
-async fn a_sidebar_created_event_resets_the_failure_count() {
-    let rig = Rig::empty();
-    rig.events_in
-        .send(EngineEvent::CreateFailed { view: rig.sidebar });
-    settle(&rig).await;
-    let second = sidebar_created(&rig.engine.take_commands());
-
-    rig.events_in.send(EngineEvent::Created { view: second });
-    rig.events_in
-        .send(EngineEvent::CreateFailed { view: second });
-    settle(&rig).await;
-    let third = sidebar_created(&rig.engine.take_commands());
-
-    // Without the reset this failure would be the third in a row and the sidebar would be abandoned.
-    rig.events_in
-        .send(EngineEvent::CreateFailed { view: third });
-    settle(&rig).await;
-    let fourth = sidebar_created(&rig.engine.take_commands());
-    assert_ne!(fourth, third);
-}
-
-#[tokio::test]
 async fn a_crashed_sidebar_is_recreated_when_the_window_is_not_closing() {
     let rig = Rig::empty();
     rig.events_in
@@ -1652,4 +1548,292 @@ async fn a_crashed_sidebar_is_recreated_when_the_window_is_not_closing() {
     settle(&rig).await;
     let fresh = sidebar_created(&rig.engine.take_commands());
     assert_ne!(fresh, rig.sidebar);
+}
+
+/// Whether the store holds node `tab` with `title`.
+fn title_stored(rig: &Rig, tab: NodeId, title: &str) -> bool {
+    rig.batches()
+        .into_iter()
+        .flatten()
+        .any(|op| matches!(op, StoreOp::UpsertNode(node) if node.id == tab && node.title == title))
+}
+
+#[tokio::test]
+async fn quitting_a_window_recreates_nothing_and_flushes_the_store() {
+    let rig = Rig::empty();
+    let view = last_content_view(&rig.startup).expect("the tab has a view");
+    let tab = all_nodes(&rig.snapshot().await)[0].id;
+    rig.emit(EngineEvent::Navigated {
+        view,
+        nav_gen: 1,
+        url: "https://quit.example".to_owned(),
+    })
+    .await;
+    rig.emit(EngineEvent::TitleChanged {
+        view,
+        nav_gen: 1,
+        title: "Quitting".to_owned(),
+    })
+    .await;
+    rig.engine.take_commands();
+    let window = rig.snapshot().await.window;
+
+    // The engine's quit order: closing, then each view's close, then the window. The title is still
+    // pending when the window starts closing, so the flush must happen on WindowClosing itself.
+    rig.events_in.send(EngineEvent::WindowClosing { window });
+    rig.snapshot().await;
+    assert!(
+        title_stored(&rig, tab, "Quitting"),
+        "the pending title reached the store before WindowClosed"
+    );
+
+    rig.events_in
+        .send(EngineEvent::Closed { view: rig.sidebar });
+    rig.events_in.send(EngineEvent::Closed { view });
+    rig.events_in.send(EngineEvent::WindowClosed { window });
+    let response = rig
+        .handle
+        .request(
+            rig.ui(),
+            Request {
+                v: API_VERSION,
+                id: 12,
+                body: Body::Query(Query::Snapshot),
+            },
+        )
+        .await;
+    assert!(matches!(
+        response.result,
+        ApiResult::Err { error } if error.code == ErrorCode::Unavailable
+    ));
+    assert!(
+        rig.engine.take_commands().is_empty(),
+        "no CreateView or Close during quit"
+    );
+}
+
+#[tokio::test]
+async fn a_closing_window_ignores_crashes_create_failures_and_popups() {
+    let rig = Rig::empty();
+    let view = last_content_view(&rig.startup).expect("the tab has a view");
+    let tab = all_nodes(&rig.snapshot().await)[0].id;
+    let window = rig.snapshot().await.window;
+    rig.events_in.send(EngineEvent::WindowClosing { window });
+    let before = rig.snapshot().await;
+    rig.engine.take_commands();
+
+    rig.events_in.send(EngineEvent::Crashed { view });
+    rig.events_in.send(EngineEvent::CreateFailed { view });
+    rig.events_in
+        .send(EngineEvent::Crashed { view: rig.sidebar });
+    rig.events_in.send(EngineEvent::PopupRequested {
+        opener: view,
+        url: "https://popup.example".to_owned(),
+        user_gesture: true,
+    });
+    let after = rig.snapshot().await;
+
+    assert!(node(&after, tab).live, "the view exit is not handled");
+    assert_eq!(after.rev, before.rev, "nothing changed");
+    assert_eq!(all_nodes(&after).len(), 1, "no popup tab opened");
+    assert!(
+        rig.engine.take_commands().is_empty(),
+        "no engine command for a closing window"
+    );
+}
+
+#[tokio::test]
+async fn a_repeated_window_closing_changes_nothing() {
+    let rig = Rig::empty();
+    let space = space_of(&rig.snapshot().await);
+    let window = rig.snapshot().await.window;
+    rig.events_in.send(EngineEvent::WindowClosing { window });
+    let before = rig.snapshot().await;
+    let batches = rig.batches().len();
+
+    rig.events_in.send(EngineEvent::WindowClosing { window });
+    let after = rig.snapshot().await;
+    assert_eq!(after.rev, before.rev);
+    assert_eq!(rig.batches().len(), batches, "no second flush");
+    let error = rig
+        .send(Command::OpenTab {
+            placement: tab_in_today(space),
+            url: "https://late.example".to_owned(),
+            activate: true,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict);
+}
+
+#[tokio::test]
+async fn window_closing_for_another_window_is_ignored() {
+    let rig = Rig::empty();
+    let space = space_of(&rig.snapshot().await);
+    rig.events_in.send(EngineEvent::WindowClosing {
+        window: WindowId::new(),
+    });
+
+    rig.ok(Command::OpenTab {
+        placement: tab_in_today(space),
+        url: "https://still-open.example".to_owned(),
+        activate: true,
+    })
+    .await;
+    assert!(matches!(
+        rig.engine.take_commands().as_slice(),
+        [EngineCommand::CreateView { .. }, EngineCommand::Show { .. }]
+    ));
+}
+
+#[tokio::test]
+async fn window_closed_for_another_window_is_ignored() {
+    let rig = Rig::empty();
+    rig.events_in.send(EngineEvent::WindowClosed {
+        window: WindowId::new(),
+    });
+    assert_eq!(
+        all_nodes(&rig.snapshot().await).len(),
+        1,
+        "the core still answers"
+    );
+}
+
+#[tokio::test]
+async fn a_close_that_never_completes_keeps_refusing_view_commands_and_answers_queries() {
+    let clock = ManualClock::new();
+    let rig = Rig::start_on(FakeStore::new(), clock.clone());
+    let space = space_of(&rig.snapshot().await);
+    let window = rig.snapshot().await.window;
+    rig.events_in.send(EngineEvent::WindowClosing { window });
+    settle(&rig).await;
+
+    clock.advance(CLOSE_STALL + Duration::from_secs(1));
+    settle(&rig).await;
+
+    for _ in 0..2 {
+        let error = rig
+            .send(Command::OpenTab {
+                placement: tab_in_today(space),
+                url: "https://late.example".to_owned(),
+                activate: true,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Conflict);
+        rig.snapshot().await;
+        clock.advance(CLOSE_STALL);
+        settle(&rig).await;
+    }
+}
+
+/// One sidebar death, then the sidebar the core created in response, if any.
+async fn recreated_after(rig: &Rig, event: EngineEvent) -> Option<ViewId> {
+    rig.events_in.send(event);
+    settle(rig).await;
+    let commands = rig.engine.take_commands();
+    if commands.is_empty() {
+        None
+    } else {
+        Some(sidebar_created(&commands))
+    }
+}
+
+#[tokio::test]
+async fn a_crash_loop_stops_after_three_recreations() {
+    let clock = ManualClock::new();
+    let rig = Rig::start_on(FakeStore::new(), clock.clone());
+    let mut current = rig.sidebar;
+    for attempt in 1..=3 {
+        rig.events_in.send(EngineEvent::Created { view: current });
+        current = recreated_after(&rig, EngineEvent::Crashed { view: current })
+            .await
+            .unwrap_or_else(|| panic!("recreation {attempt} is allowed"));
+    }
+    rig.events_in.send(EngineEvent::Created { view: current });
+    assert!(
+        recreated_after(&rig, EngineEvent::Crashed { view: current })
+            .await
+            .is_none(),
+        "the fourth death stops the recreations"
+    );
+    assert!(ui_refused(&rig, current).await);
+}
+
+#[tokio::test]
+async fn a_sidebar_that_lives_ten_seconds_resets_the_budget() {
+    let clock = ManualClock::new();
+    let rig = Rig::start_on(FakeStore::new(), clock.clone());
+    let mut current = rig.sidebar;
+    for _ in 0..2 {
+        current = recreated_after(&rig, EngineEvent::Crashed { view: current })
+            .await
+            .expect("allowed");
+    }
+
+    rig.events_in.send(EngineEvent::Created { view: current });
+    // The actor reads the clock when it handles `Created`, so settle before moving time.
+    settle(&rig).await;
+    clock.advance(Duration::from_secs(10));
+    current = recreated_after(&rig, EngineEvent::Crashed { view: current })
+        .await
+        .expect("the healthy sidebar is recreated");
+
+    for _ in 0..2 {
+        current = recreated_after(&rig, EngineEvent::Crashed { view: current })
+            .await
+            .expect("allowed after the reset");
+    }
+    assert!(
+        recreated_after(&rig, EngineEvent::Crashed { view: current })
+            .await
+            .is_none(),
+        "the budget is spent again"
+    );
+}
+
+#[tokio::test]
+async fn the_budget_is_counted_over_a_rolling_thirty_seconds() {
+    let clock = ManualClock::new();
+    let rig = Rig::start_on(FakeStore::new(), clock.clone());
+    let mut current = rig.sidebar;
+    for _ in 0..2 {
+        current = recreated_after(&rig, EngineEvent::Crashed { view: current })
+            .await
+            .expect("allowed");
+    }
+
+    clock.advance(Duration::from_secs(31));
+    for _ in 0..3 {
+        current = recreated_after(&rig, EngineEvent::Crashed { view: current })
+            .await
+            .expect("the earlier deaths left the window");
+    }
+    assert!(
+        recreated_after(&rig, EngineEvent::Crashed { view: current })
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn create_failures_and_crashes_share_the_budget() {
+    let clock = ManualClock::new();
+    let rig = Rig::start_on(FakeStore::new(), clock.clone());
+    let mut current = rig.sidebar;
+    current = recreated_after(&rig, EngineEvent::CreateFailed { view: current })
+        .await
+        .expect("allowed");
+    current = recreated_after(&rig, EngineEvent::Crashed { view: current })
+        .await
+        .expect("allowed");
+    current = recreated_after(&rig, EngineEvent::CreateFailed { view: current })
+        .await
+        .expect("allowed");
+    assert!(
+        recreated_after(&rig, EngineEvent::Crashed { view: current })
+            .await
+            .is_none(),
+        "the fourth failure of either kind stops the recreations"
+    );
 }

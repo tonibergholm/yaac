@@ -3,6 +3,7 @@
 
 mod actor;
 mod auth;
+mod clock;
 mod commands;
 mod error;
 mod events;
@@ -21,6 +22,7 @@ pub mod testing;
 mod tests;
 
 use actor::{Actor, Inbound, Message};
+use clock::{Clock, SystemClock};
 use state::Plan;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
@@ -95,7 +97,7 @@ impl Drop for Lifecycle {
 
 impl CoreHandle {
     /// Authorizes and runs one request. Once the core has stopped, every request answers
-    /// `Internal`. The inbox is unbounded: a client's requests are bounded by its own waiting.
+    /// `Unavailable`. The inbox is unbounded: a client's requests are bounded by its own waiting.
     pub async fn request(&self, principal: Principal, request: Request) -> Response {
         let id = request.id;
         let (reply, answer) = oneshot::channel();
@@ -159,6 +161,15 @@ pub fn spawn(
     store: Box<dyn Store>,
     engine: Arc<dyn EngineHandle>,
 ) -> Result<(CoreHandle, EngineEventSender), CoreError> {
+    spawn_with_clock(store, engine, Arc::new(SystemClock))
+}
+
+/// `spawn` with an injected time source. Tests move the clock to exercise time-based rules.
+pub(crate) fn spawn_with_clock(
+    store: Box<dyn Store>,
+    engine: Arc<dyn EngineHandle>,
+    clock: Arc<dyn Clock>,
+) -> Result<(CoreHandle, EngineEventSender), CoreError> {
     let (jobs, job_queue) = std::sync::mpsc::channel();
     let store_thread = std::thread::Builder::new()
         .name("yaac-store".into())
@@ -181,7 +192,7 @@ pub fn spawn(
 
     let (inbox, inbox_queue) = mpsc::unbounded_channel();
     let (events, _) = broadcast::channel(EVENT_QUEUE);
-    let actor = Actor::new(state, jobs, engine, events.clone());
+    let actor = Actor::new(state, jobs, engine, events.clone(), clock);
     let core_thread = std::thread::Builder::new()
         .name("yaac-core".into())
         .spawn(move || {
