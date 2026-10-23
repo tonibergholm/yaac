@@ -204,6 +204,8 @@ async fn quit_during_create(harness: &mut Harness) -> Result<(), String> {
             url: data_url("<title>pending</title>"),
         },
     });
+    // The pass code is set before the close: the loop can end as soon as WindowClosed is sent.
+    harness.engine.set_exit_code(0);
     harness.engine.close_windows();
     println!("HARNESS step=quit-during-create requested");
     let matched = harness

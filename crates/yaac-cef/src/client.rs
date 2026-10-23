@@ -90,19 +90,22 @@ wrap_jsdialog_handler! {
     impl JsdialogHandler {
         fn on_before_unload_dialog(
             &self,
-            _browser: Option<&mut Browser>,
+            browser: Option<&mut Browser>,
             _message_text: Option<&CefString>,
             _is_reload: i32,
             callback: Option<&mut JsdialogCallback>,
         ) -> i32 {
+            let browser_id = browser.map(|b| b.identifier());
             // The page's beforeunload confirmation is answered here, synchronously. "Stay" cancels
             // the close and leaves every browser as it was.
             let allow = unload_allowed();
-            dev_log!("unload confirmation asked allow={allow}");
             if let Some(callback) = callback {
                 callback.cont(i32::from(allow), None);
             }
             dev_log!("unload confirmation answered allow={allow}");
+            if let Some(browser_id) = browser_id {
+                ui::unload_answered(browser_id, allow);
+            }
             1
         }
     }

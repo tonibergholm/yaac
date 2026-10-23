@@ -570,7 +570,8 @@ pub(crate) fn browser_closed(view: ViewId) {
             let mut handle = View::from(&browser_view);
             root.remove_child_view(Some(&mut handle));
         }
-        if empty {
+        // A close attempt in progress goes on with the browsers still open.
+        if empty || held {
             close_window(window_id);
         }
         maybe_quit();
@@ -656,8 +657,29 @@ pub(crate) fn can_close_window(window: WindowId) -> bool {
         commit_close(window, &shared);
         return true;
     }
-    cancel_attempt(window, &shared);
+    // Not agreed: either a browser is still deciding (its beforeunload confirmation is pending) or
+    // it stayed. The answer, not this return value, decides: `unload_answered` cancels the attempt
+    // on "stay", and re-runs the close on "leave". The attempt stays open until one of those.
     false
+}
+
+/// A beforeunload confirmation was answered for `browser`. "Stay" cancels the close attempt of its
+/// window: nothing has committed, so the rest of the app keeps running, and the tabs that already
+/// closed in the attempt are reported. "Leave" lets that browser close; the window's close runs
+/// again, so the browsers still open are asked in turn.
+pub(crate) fn unload_answered(browser: i32, allow: bool) {
+    let Some(shared) = shared() else { return };
+    let Some((view, _)) = shared.registry.browser(browser) else {
+        return;
+    };
+    let Some(window) = with(|s| s.views.get(&view).map(|v| v.window)) else {
+        return;
+    };
+    if allow {
+        post_to_ui(Box::new(move || close_window(window)));
+    } else if with(|s| s.attempts.contains_key(&window)) {
+        cancel_attempt(window, &shared);
+    }
 }
 
 /// The commit point: every browser agreed to close.
