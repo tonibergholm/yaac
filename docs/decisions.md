@@ -47,3 +47,14 @@ Open:
 - One typed command API in the Rust core serves the web UI, the CLI and the MCP server. Not a separate CDP proxy. Not yet decided; the architecture spec will confirm.
 - Reference: Aside's documented CLI, MCP and REPL. Observed behavior only; no Aside code or assets.
 
+## 2026-10-23: agent interface, owner answers
+
+Answers to the open questions in `docs/research/05-agent-interface.md`.
+
+- `evaluate` ships in v1, in the privileged scope, with confirmation.
+- Agents act only in Spaces the user created or marked for agents. Never the default profile.
+- Confirmation is required only for sensitive actions: payment and credential fields, account settings, and origins on a user-managed list. The exact definition goes in `docs/architecture.md`.
+- Cookie access is off by default. A per-Space toggle in settings turns it on. When on, it is a separate privileged scope.
+- The MCP tool schema and the CLI contract are public and versioned from the first release.
+- Windows transport (a named pipe with an owner-only access list) is deferred. Windows is not a v1 target.
+
