@@ -1,0 +1,19 @@
+# Snapshot and screenshot sizes, Aside REPL (MCP repl tool), 2026-10-23
+# Bytes are UTF-8 byte counts of the snapshot tree string as returned by the REPL (Buffer.byteLength).
+# Raw HTML baselines are from note 06 run 1 (curl, redirects followed). Tokens estimated as bytes / 4.
+# Full Wikipedia and GitHub trees were not saved (size and page content); only stats are kept.
+
+url | snapshot | tree bytes | newlines | interactive bytes | screenshot PNG bytes | raw HTML bytes | tree/raw | est. tokens (tree/4)
+https://example.com/ | full | 270 | 2 | 329 | 199568 | 577 | 47% | 68
+https://en.wikipedia.org/wiki/Web_browser | full | 16469 (capped) | 409 | 16466 (capped) | 845839 | 415391 | 4.0% | 4117
+https://github.com/tonibergholm/yaac | full | 6595 | 151 | 5351 | 396659 | 245228 | 2.7% | 1649
+http://127.0.0.1:8765/big.html (local, 4000 list items) | full | 16465 (capped) | - | 16453 (capped) | - | 492816 | 3.3% | 4116
+http://127.0.0.1:8765/big.html | selector "ul > li:nth-child(2)" | 268 | - | - | - | - | - | 67
+
+# Cap marker at the end of a capped tree (verbatim, Aside runtime output):
+... [snapshot truncated at 16 KiB; narrow it with { interactive: true }, selector or ref]
+
+# display() image of a 2x-density screenshot of the local form page:
+# original 2880x1800, displayed 2000x1250, JPEG, base64 length 112872 (about 84.6 KB binary).
+# page.screenshot() default (raw): 53673 bytes. annotatedScreenshot() base64 length: 73768.
+# Image token estimate is INFERRED ((2000 x 1250) / 750, about 3333), not measured.

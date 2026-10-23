@@ -1,0 +1,283 @@
+# aside --help and group-level help, run 2026-10-23 (static help text only; no action commands run)
+# CLI version: 1.26.1023.1115
+# Note: leaf --help after a nested subcommand (for example 'account list --help') printed the top-level help in this version; the group help is listed below.
+
+=== aside  --help
+Usage: aside [options] [prompt...]
+       aside [options] <command> [args...]
+
+Run a browsing task in Aside from the terminal.
+
+Arguments:
+  prompt                      Task prompt or URL for the browser agent
+
+Options:
+  -V, --version               Print version
+  --account <id>              Account selector: u0 (first profile) or
+                              u0:<profile-id>
+  --host <host>               Run on a session host: 'local', a remote host id,
+                              or its device name
+  --profile <id>              Browser profile id on the selected host (see
+                              'aside host profiles')
+  -m, --model <model>         Model id, or provider/model (e.g.
+                              openai/gpt-5.6-sol)
+  -p, --provider <provider>   Model provider name
+  -s, --speed <speed>         Model speed (choices: "default", "fast")
+  --effort <effort>           Thinking effort (choices: "off", "minimal", "low",
+                              "medium", "high", "xhigh", "max", "ultrabrowse")
+  --permission <mode>         Session permission: ask/guard (ask before other
+                              folders) or full-access (choices: "ask", "guard",
+                              "full-access")
+  --update                    Alias for aside update
+  -h, --help                  Print help
+
+Commands:
+  account                     List and switch Aside CLI accounts.
+  login [options]             Sign the CLI in by confirming a code in Settings >
+                              Account > Devices
+  logout                      Sign the CLI out and revoke its credentials
+  host                        Inspect and select session hosts (Remote Control /
+                              cloud)
+  memory                      Search and read Aside's memory (read-only)
+  skills                      Browse Aside's site skills (Slack, Gmail, Notion,
+                              Google apps, ...) usable from aside repl
+  exec [options] [prompt...]  Run a browser agent session.
+  repl [options] [code...]    Run Playwright-style JavaScript in Aside Browser.
+  mcp [options]               Start the MCP server over stdio.
+  guide [topic]               Show how to use Aside for browser tasks.
+  update                      Check for updates and install the newest release.
+  session                     Inspect and control browser sessions.
+  settings                    Configure Aside CLI settings.
+
+Model options:
+  Defaults come from your Aside settings.
+  Pass --model provider/model (e.g. --model openai/gpt-5.6-sol). Slash form overrides --provider.
+  Pass --effort ultrabrowse for proactive browsing at the model's highest thinking level.
+  --permission ask and --permission guard are the same (Guard). Omit for Guard.
+
+
+  aside repl "const page = await openTab('https://example.com'); console.log(await page.title())"
+  aside mcp
+  aside update
+exit=0
+
+=== aside account --help
+Usage: aside account [options] [command]
+
+List and switch Aside CLI accounts.
+
+Options:
+  -h, --help             Print help
+
+Commands:
+  list                   List local Aside accounts.
+  status [options] [id]  Show the active Aside account.
+  use <id>               Set the default Aside CLI account.
+  help [command]         display help for command
+exit=0
+
+=== aside login --help
+Usage: aside login [options]
+
+Sign the CLI in by confirming a code in Settings > Account > Devices
+
+Options:
+  --account <id>   Account selector: u0 (first profile) or u0:<profile-id>
+  --email <email>  Account email for browser approval (prompted if omitted)
+  --password       Use email and password instead of browser approval
+  --device-code    Sign in with a code in your browser (default)
+  -h, --help       Print help
+exit=0
+
+=== aside logout --help
+Usage: aside logout [options]
+
+Sign the CLI out and revoke its credentials
+
+Options:
+  -h, --help  Print help
+exit=0
+
+=== aside host --help
+Usage: aside host [options] [command]
+
+Inspect and select session hosts (Remote Control / cloud)
+
+Options:
+  -h, --help            Print help
+
+Commands:
+  profiles [options]    List browser profiles for the selected host and account
+  list [options]        List available session hosts
+  use [options] <host>  Set the default session host
+  status [options]      Show the default session host
+  help [command]        display help for command
+exit=0
+
+=== aside memory --help
+Usage: aside memory [options] [command]
+
+Search and read Aside's memory (read-only)
+
+Options:
+  -h, --help                   Print help
+
+Commands:
+  search [options] <query...>  Semantically search Aside's memory
+  list [options]               List memory markdown files
+  show [options] <path>        Print a memory file, for example MEMORY.md or
+                               people/jane.md
+  path [options]               Print the memory directory path
+  help [command]               display help for command
+exit=0
+
+=== aside skills --help
+Usage: aside skills [options] [command]
+
+Browse Aside's site skills (Slack, Gmail, Notion, Google apps, ...) usable from
+aside repl
+
+Options:
+  -h, --help             Print help
+
+Commands:
+  list [options]         List skills with descriptions
+  show [options] <name>  Print a skill, for example slack or google-gmail
+  install [options]      Install the aside-browser skill into your coding agents
+                         (Codex, Claude Code, Cursor, OpenCode)
+  help [command]         display help for command
+exit=0
+
+=== aside exec --help
+Usage: aside exec [options] [prompt...]
+
+Run a browser agent session.
+
+Arguments:
+  prompt                     Task prompt or URL for the browser agent
+
+Options:
+  --account <id>             Account selector: u0 (first profile) or
+                             u0:<profile-id>
+  --host <host>              Run on a session host: 'local', a remote host id,
+                             or its device name
+  --profile <id>             Browser profile id on the selected host (see 'aside
+                             host profiles')
+  -m, --model <model>        Model id, or provider/model (e.g.
+                             openai/gpt-5.6-sol)
+  -p, --provider <provider>  Model provider name
+  -s, --speed <speed>        Model speed (choices: "default", "fast")
+  --effort <effort>          Thinking effort (choices: "off", "minimal", "low",
+                             "medium", "high", "xhigh", "max", "ultrabrowse")
+  --permission <mode>        Session permission: ask/guard (ask before other
+                             folders) or full-access (choices: "ask", "guard",
+                             "full-access")
+  -h, --help                 Print help
+
+Model options:
+  Defaults come from your Aside settings.
+  Pass --model provider/model (e.g. --model openai/gpt-5.6-sol). Slash form overrides --provider.
+  Pass --effort ultrabrowse for proactive browsing at the model's highest thinking level.
+  --permission ask and --permission guard are the same (Guard). Omit for Guard.
+
+
+=== aside repl --help
+Usage: aside repl [options] [code...]
+
+Run Playwright-style JavaScript in Aside Browser.
+
+Arguments:
+  code            JavaScript to run in Aside Browser
+
+Options:
+  --account <id>  Account selector: u0 (first profile) or u0:<profile-id>
+  --host <host>   Run on a session host: 'local', a remote host id, or its
+                  device name
+  --profile <id>  Browser profile id on the selected host (see 'aside host
+                  profiles')
+  -h, --help      Print help
+
+Notes:
+  Playwright-style JavaScript, 120s timeout. page starts unset; call openTab(url) or getTabs() first.
+  Use console.log() to print return values.
+
+
+=== aside mcp --help
+Usage: aside mcp [options]
+
+Start the MCP server over stdio.
+
+Options:
+  --account <id>  Account selector: u0 (first profile) or u0:<profile-id>
+  --host <host>   Run on a session host: 'local', a remote host id, or its
+                  device name
+  --profile <id>  Browser profile id on the selected host (see 'aside host
+                  profiles')
+  -h, --help      Print help
+
+
+
+=== aside guide --help
+Usage: aside guide [options] [topic]
+
+Show how to use Aside for browser tasks.
+
+Arguments:
+  topic       Print the detailed REPL guide (choices: "repl")
+
+Options:
+  -h, --help  Print help
+exit=0
+
+=== aside update --help
+Usage: aside update [options]
+
+Check for updates and install the newest release.
+
+Options:
+  -h, --help  Print help
+exit=0
+
+=== aside session --help
+Usage: aside session [options] [command]
+
+Inspect and control browser sessions.
+
+Options:
+  -h, --help                         Print help
+
+Commands:
+  list [options]                     List sessions, including unsaved sessions.
+  resume [options] <id> [prompt...]  Continue an existing session.
+  stop [options] <id>                Stop a running session.
+  steer [options] <id> <prompt...>   Interrupt a session with a new prompt.
+  queue [options] <id> <prompt...>   Queue a follow-up prompt after the current
+                                     step.
+  archive [options] <id>             Archive a session.
+  delete [options] <id>              Delete a session.
+  help [command]                     display help for command
+
+steer interrupts the current step. queue waits and runs next.
+
+
+=== aside settings --help
+Usage: aside settings [options] [command]
+
+Configure Aside CLI settings.
+
+Options:
+  -h, --help                       Print help
+
+Commands:
+  get                              Print the effective CLI settings as JSON.
+  save-sessions [options] <value>  Show CLI sessions in the chat list.
+  set-default-profile <id>         Set the default profile for CLI commands.
+  help [command]                   display help for command
+
+save-sessions true puts CLI runs on the browser chat list. false (default) keeps them off it.
+set-default-profile u1 uses that account's first browser profile. Use u1:<profile-id> for a specific profile.
+One-shot override: --account u1:<profile-id> or --profile <profile-id>.
+set-default-profile default follows the current account and its first browser profile.
+
+
+=== aside guide repl (topic text not saved: it is Aside prompt and documentation text)
