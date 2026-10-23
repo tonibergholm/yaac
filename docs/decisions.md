@@ -37,3 +37,13 @@ Open:
 - Hyprland titlebar behavior, GPU page, popups, IME, screen sharing (need the user at the machine).
 - Mixed Chrome-style and Alloy views in one window.
 - CEF 156 stable vs beta, and MV2 component loading under CEF's Chrome runtime.
+
+## 2026-10-23: no built-in AI, but a first-class agent interface
+
+- No built-in AI features. This still holds.
+- The browser must be usable by external agents through a CLI and an MCP server, so agents do not need screenshot-and-click automation. The owner needs this daily at work, so it is in scope for the first usable build, not a later extra.
+- Token efficiency is a design requirement. Page state goes to agents as compact accessibility-tree snapshots with stable element refs, not DOM dumps or screenshots by default. Responses are size-bounded.
+- Safe by default: off until enabled, local-only transport (Unix socket or named pipe with filesystem permissions, no TCP port), explicit per-Space grants, a visible agent indicator, and an audit log. Details follow the research in `docs/research/05-agent-interface.md` and land in `docs/architecture.md`.
+- One typed command API in the Rust core serves the web UI, the CLI and the MCP server. Not a separate CDP proxy. Not yet decided; the architecture spec will confirm.
+- Reference: Aside's documented CLI, MCP and REPL. Observed behavior only; no Aside code or assets.
+
