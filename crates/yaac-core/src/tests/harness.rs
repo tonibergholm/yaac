@@ -1,20 +1,22 @@
 //! Shared helpers for the `CoreHandle` tests.
 
 use crate::testing::FakeStore;
-use crate::{CoreHandle, Principal, spawn};
+use crate::{CoreHandle, EngineEventSender, Principal, spawn};
 use std::sync::Arc;
 use yaac_api::{
     API_VERSION, ApiError, ApiResult, Body, Command, NodeView, Placement, Query, Request,
     ResponseBody, Snapshot,
 };
 use yaac_engine::{EngineCommand, EngineEvent, FakeEngine, ViewKind};
-use yaac_model::{ContainerKind, SpaceId, ViewId};
+use yaac_model::{ContainerKind, NodeId, SpaceId, ViewId};
 
 pub(super) struct Rig {
     pub(super) handle: CoreHandle,
+    /// Engine ingress. Events sent through it are applied in arrival order with requests.
+    pub(super) events_in: EngineEventSender,
     pub(super) engine: FakeEngine,
     pub(super) store: FakeStore,
-    sidebar: ViewId,
+    pub(super) sidebar: ViewId,
     /// The engine commands issued while starting.
     pub(super) startup: Vec<EngineCommand>,
 }
@@ -22,7 +24,7 @@ pub(super) struct Rig {
 impl Rig {
     pub(super) fn start(store: FakeStore) -> Self {
         let engine = FakeEngine::new();
-        let handle =
+        let (handle, events_in) =
             spawn(Box::new(store.clone()), Arc::new(engine.clone())).expect("the core starts");
         let startup = engine.take_commands();
         let sidebar = startup
@@ -36,6 +38,7 @@ impl Rig {
             .expect("startup creates the sidebar view");
         Self {
             handle,
+            events_in,
             engine,
             store,
             sidebar,
@@ -52,12 +55,20 @@ impl Rig {
     }
 
     pub(super) async fn send(&self, command: Command) -> Result<ResponseBody, ApiError> {
+        self.send_as(self.ui(), command).await
+    }
+
+    pub(super) async fn send_as(
+        &self,
+        principal: Principal,
+        command: Command,
+    ) -> Result<ResponseBody, ApiError> {
         let request = Request {
             v: API_VERSION,
             id: 1,
             body: Body::Command(command),
         };
-        match self.handle.request(self.ui(), request).await.result {
+        match self.handle.request(principal, request).await.result {
             ApiResult::Ok { body } => Ok(body),
             ApiResult::Err { error } => Err(error),
         }
@@ -81,14 +92,16 @@ impl Rig {
         }
     }
 
-    /// Sends an engine event. A snapshot taken afterwards is a barrier: the actor polls engine
-    /// events first, so the event is applied before the snapshot is answered.
+    /// Sends an engine event and returns the snapshot after it. The inbox is FIFO, so the snapshot
+    /// is answered only after the event has been handled.
     pub(super) async fn emit(&self, event: EngineEvent) -> Snapshot {
-        self.handle
-            .engine_events()
-            .send(event)
-            .expect("the actor is running");
+        self.events_in.send(event);
         self.snapshot().await
+    }
+
+    /// Store batches recorded so far.
+    pub(super) fn batches(&self) -> Vec<Vec<crate::StoreOp>> {
+        self.store.applied()
     }
 }
 
@@ -128,16 +141,29 @@ pub(super) fn all_nodes(snapshot: &Snapshot) -> Vec<NodeView> {
     out
 }
 
-pub(super) fn node(snapshot: &Snapshot, id: yaac_model::NodeId) -> NodeView {
+pub(super) fn node(snapshot: &Snapshot, id: NodeId) -> NodeView {
     all_nodes(snapshot)
         .into_iter()
         .find(|candidate| candidate.id == id)
         .unwrap_or_else(|| panic!("node {id} is in the snapshot"))
 }
 
-pub(super) fn opened(body: ResponseBody) -> yaac_model::NodeId {
+pub(super) fn opened(body: ResponseBody) -> NodeId {
     match body {
         ResponseBody::Opened { node, .. } => node,
         other => panic!("expected Opened, got {other:?}"),
     }
+}
+
+pub(super) fn rev_of(body: &ResponseBody) -> u64 {
+    match body {
+        ResponseBody::Ack { rev }
+        | ResponseBody::Opened { rev, .. }
+        | ResponseBody::SpaceCreated { rev, .. } => *rev,
+        ResponseBody::Snapshot(snapshot) => snapshot.rev,
+    }
+}
+
+pub(super) fn space_of(snapshot: &Snapshot) -> SpaceId {
+    snapshot.active_space
 }

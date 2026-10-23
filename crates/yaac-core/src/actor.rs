@@ -1,5 +1,9 @@
-//! The actor task (one writer, one total order of commands) and the store thread (synchronous
-//! persistence). The actor awaits store commits. It never awaits the engine.
+//! The actor task and the store thread. The actor is the only writer: it takes requests and engine
+//! events from one FIFO inbox, so requests and callbacks are handled in the order they were sent.
+//! It awaits store commits and never awaits the engine.
+//!
+//! Title and URL changes are applied in memory at once but persisted on a coalescing flush: at most
+//! one batch per `FLUSH_INTERVAL`, and always before the next command's commit and at shutdown.
 
 use crate::auth;
 use crate::commands;
@@ -7,12 +11,17 @@ use crate::error::internal;
 use crate::events::{self, Step};
 use crate::state::{Plan, State, snapshot};
 use crate::{Principal, Store, StoreError, StoreOp};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
+use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::time::MissedTickBehavior;
 use yaac_api::{ApiError, ApiResult, Body, Event, Request, Response, ResponseBody};
 use yaac_engine::{EngineEvent, EngineHandle};
-use yaac_model::Workspace;
+use yaac_model::{Node, NodeId, Workspace};
+
+pub(crate) const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 
 pub(crate) type Reply<T> = Box<dyn FnOnce(Result<T, StoreError>) + Send>;
 
@@ -22,7 +31,7 @@ pub(crate) enum StoreJob {
 }
 
 /// Runs store calls in order until every sender is dropped. Each `apply` is atomic and synchronous,
-/// so dropping the senders is the flush.
+/// so the actor's last commit is durable once it returns.
 pub(crate) fn run_store(mut store: Box<dyn Store>, jobs: std_mpsc::Receiver<StoreJob>) {
     for job in jobs {
         match job {
@@ -82,11 +91,21 @@ pub(crate) struct Message {
     pub(crate) reply: oneshot::Sender<Response>,
 }
 
+/// Everything the actor receives, in arrival order.
+pub(crate) enum Inbound {
+    Request(Message),
+    Engine(EngineEvent),
+    /// Flush and stop. Sent by `CoreHandle::shutdown`, and when the last handle is dropped.
+    Shutdown,
+}
+
 pub(crate) struct Actor {
     state: State,
     store: std_mpsc::Sender<StoreJob>,
     engine: Arc<dyn EngineHandle>,
     events: broadcast::Sender<Event>,
+    /// Coalesced node writes not yet persisted. The last value per node wins.
+    pending: BTreeMap<NodeId, Node>,
 }
 
 impl Actor {
@@ -101,32 +120,38 @@ impl Actor {
             store,
             engine,
             events,
+            pending: BTreeMap::new(),
         }
     }
 
-    /// Engine events are polled first, so a callback sent before a request is applied before it.
-    /// The loop ends when every request sender is gone, or when the core's window closes.
-    pub(crate) async fn run(
-        mut self,
-        mut requests: mpsc::Receiver<Message>,
-        mut engine_events: mpsc::UnboundedReceiver<EngineEvent>,
-    ) {
+    /// Handles inbox items one at a time. The flush tick runs between them, so a stream of callbacks
+    /// cannot hold back a pending flush, and a flush cannot hold back a request.
+    pub(crate) async fn run(mut self, mut inbox: mpsc::UnboundedReceiver<Inbound>) {
+        let mut ticker = tokio::time::interval(FLUSH_INTERVAL);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
             tokio::select! {
-                biased;
-                Some(event) = engine_events.recv() => {
-                    if self.on_engine_event(event).await {
-                        break;
+                message = inbox.recv() => match message {
+                    Some(Inbound::Request(Message { principal, request, reply })) => {
+                        let response = self.dispatch(&principal, request).await;
+                        let _ = reply.send(response);
+                    }
+                    Some(Inbound::Engine(event)) => {
+                        if self.on_engine_event(event).await {
+                            break;
+                        }
+                    }
+                    Some(Inbound::Shutdown) | None => break,
+                },
+                _ = ticker.tick() => {
+                    if let Err(error) = self.flush().await {
+                        tracing::warn!("coalesced writes not flushed: {error}");
                     }
                 }
-                message = requests.recv() => {
-                    let Some(Message { principal, request, reply }) = message else {
-                        break;
-                    };
-                    let response = self.dispatch(&principal, request).await;
-                    let _ = reply.send(response);
-                }
             }
+        }
+        if let Err(error) = self.flush().await {
+            tracing::warn!("coalesced writes not flushed at shutdown: {error}");
         }
     }
 
@@ -144,11 +169,11 @@ impl Actor {
         principal: &Principal,
         request: Request,
     ) -> Result<ResponseBody, ApiError> {
-        let kind = auth::admit(&self.state, principal, &request)?;
+        auth::admit(&self.state, principal, &request)?;
         match request.body {
             Body::Query(_) => snapshot(&self.state).map(ResponseBody::Snapshot),
             Body::Command(command) => {
-                let (plan, answer) = commands::plan(&self.state, kind, command)?;
+                let (plan, answer) = commands::plan(&self.state, command)?;
                 self.commit(plan).await?;
                 Ok(answer.into_body(self.state.ws.rev))
             }
@@ -169,19 +194,34 @@ impl Actor {
         }
     }
 
-    /// Commit before effect: the store commits the ops, then the state is swapped in, then the
-    /// engine commands go out, then the change is published.
+    /// Commit before effect. A plan that is not coalesced first persists the pending writes with its
+    /// own ops in one batch. Then the state is swapped in, the engine commands go out, and the change
+    /// is published. A failed store commit changes nothing and the pending writes stay queued.
     async fn commit(&mut self, plan: Plan) -> Result<(), ApiError> {
         let Plan {
             state,
             ops,
             effects,
             topic,
+            coalesce,
         } = plan;
-        if !ops.is_empty() {
-            commit_async(&self.store, ops)
-                .await
-                .map_err(|error| internal(error.to_string()))?;
+        if coalesce {
+            for op in ops {
+                if let StoreOp::UpsertNode(node) = op {
+                    self.pending.insert(node.id, node);
+                }
+            }
+        } else if !ops.is_empty() || !self.pending.is_empty() {
+            let drained = std::mem::take(&mut self.pending);
+            let mut batch = pending_ops(&drained);
+            batch.extend(ops);
+            if !batch.iter().any(|op| matches!(op, StoreOp::SetRev(_))) {
+                batch.push(StoreOp::SetRev(state.ws.rev));
+            }
+            if let Err(error) = commit_async(&self.store, batch).await {
+                self.pending = drained;
+                return Err(internal(error.to_string()));
+            }
         }
         self.state = state;
         for command in effects {
@@ -195,4 +235,25 @@ impl Actor {
         }
         Ok(())
     }
+
+    /// Persists the coalesced writes as one batch. A failed batch is kept for the next flush.
+    async fn flush(&mut self) -> Result<(), StoreError> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let drained = std::mem::take(&mut self.pending);
+        let mut batch = pending_ops(&drained);
+        batch.push(StoreOp::SetRev(self.state.ws.rev));
+        match commit_async(&self.store, batch).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.pending = drained;
+                Err(error)
+            }
+        }
+    }
+}
+
+fn pending_ops(pending: &BTreeMap<NodeId, Node>) -> Vec<StoreOp> {
+    pending.values().cloned().map(StoreOp::UpsertNode).collect()
 }

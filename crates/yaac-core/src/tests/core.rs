@@ -4,29 +4,16 @@
 use super::harness::*;
 use crate::testing::FakeStore;
 use crate::{Principal, StoreOp};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use yaac_api::{
     API_VERSION, ApiResult, Body, Command, ErrorCode, Placement, Query, Request, ResponseBody,
-    Snapshot, Topic,
+    Topic,
 };
 use yaac_engine::{EngineCommand, EngineEvent, ViewKind};
 use yaac_model::{
     Container, ContainerId, ContainerKind, Node, NodeId, NodeKind, NodeState, Position, Profile,
     ProfileId, ProfileKind, SessionState, Space, SpaceId, ViewId, WindowId, Workspace,
 };
-
-fn rev(body: &ResponseBody) -> u64 {
-    match body {
-        ResponseBody::Ack { rev }
-        | ResponseBody::Opened { rev, .. }
-        | ResponseBody::SpaceCreated { rev, .. } => *rev,
-        ResponseBody::Snapshot(snapshot) => snapshot.rev,
-    }
-}
-
-fn space_id(snapshot: &Snapshot) -> SpaceId {
-    snapshot.active_space
-}
 
 fn stored_profile(ws: &mut Workspace, kind: ProfileKind, name: &str) -> ProfileId {
     let id = ProfileId::new();
@@ -117,7 +104,7 @@ fn stored_tab(ws: &mut Workspace, container: ContainerId, position: Position, ur
 
 /// One Default profile with favorites and one Space holding three tabs. The session selects the
 /// middle tab.
-fn stored_workspace() -> (Workspace, NodeId, NodeId, NodeId, SpaceId) {
+fn stored_workspace(middle_url: &str) -> (Workspace, NodeId, NodeId, NodeId, SpaceId) {
     let mut ws = Workspace::default();
     let profile = stored_profile(&mut ws, ProfileKind::Default, "Default");
     stored_container(&mut ws, profile, None, ContainerKind::Favorites);
@@ -127,7 +114,7 @@ fn stored_workspace() -> (Workspace, NodeId, NodeId, NodeId, SpaceId) {
     let second = Position::between(Some(&first), None).expect("a key fits");
     let third = Position::between(Some(&second), None).expect("a key fits");
     let one = stored_tab(&mut ws, today, first, "https://one.example");
-    let two = stored_tab(&mut ws, today, second, "https://two.example");
+    let two = stored_tab(&mut ws, today, second, middle_url);
     let three = stored_tab(&mut ws, today, third, "https://three.example");
     let window = WindowId::new();
     ws.sessions.insert(
@@ -143,11 +130,112 @@ fn stored_workspace() -> (Workspace, NodeId, NodeId, NodeId, SpaceId) {
     (ws, one, two, three, space)
 }
 
+/// The engine commands and store batches issued by one request.
+struct Step {
+    commands: Vec<EngineCommand>,
+    batch: Vec<StoreOp>,
+}
+
+/// Runs one command, asserts it produced exactly one store batch that ends with `SetRev` at the
+/// response's revision, and returns the commands it issued.
+async fn run(rig: &Rig, command: Command) -> (ResponseBody, Step) {
+    rig.engine.take_commands();
+    let before = rig.batches().len();
+    let body = rig.ok(command).await;
+    let batches = rig.batches();
+    let issued = &batches[before..];
+    let batch = if issued.is_empty() {
+        Vec::new()
+    } else {
+        assert_eq!(issued.len(), 1, "one store batch per command");
+        issued[0].clone()
+    };
+    if let Some(last) = batch.last() {
+        assert_eq!(
+            last,
+            &StoreOp::SetRev(rev_of(&body)),
+            "the batch records the revision of the response"
+        );
+    }
+    let step = Step {
+        commands: rig.engine.take_commands(),
+        batch,
+    };
+    (body, step)
+}
+
+fn every_command(node: NodeId, space: SpaceId) -> Vec<Command> {
+    let placement = tab_in_today(space);
+    vec![
+        Command::OpenTab {
+            placement: placement.clone(),
+            url: "https://a.example".to_owned(),
+            activate: true,
+        },
+        Command::CloseTab { node },
+        Command::SelectTab { node },
+        Command::SelectSpace { space },
+        Command::MoveNode {
+            node,
+            to: placement.clone(),
+        },
+        Command::CreateFolder {
+            placement,
+            title: "f".to_owned(),
+        },
+        Command::RenameNode {
+            node,
+            title: "t".to_owned(),
+        },
+        Command::CreateSpace {
+            name: "s".to_owned(),
+        },
+        Command::Navigate {
+            node,
+            url: "https://b.example".to_owned(),
+        },
+        Command::Back { node },
+        Command::Forward { node },
+        Command::Reload { node },
+    ]
+}
+
 #[tokio::test]
 #[ignore = "needs m1/model"]
-async fn bootstrap_creates_one_profile_space_tab_and_window_and_persists_them() {
+async fn bootstrap_sequence_and_persistence() {
     let rig = Rig::empty();
-    let ops: Vec<StoreOp> = rig.store.applied().into_iter().flatten().collect();
+    let snapshot = rig.snapshot().await;
+    let tab = all_nodes(&snapshot)[0].id;
+
+    assert_eq!(rig.startup.len(), 4);
+    let (window, sidebar, content) = match rig.startup.as_slice() {
+        [
+            EngineCommand::CreateWindow { window, .. },
+            EngineCommand::CreateView {
+                view: sidebar,
+                spec: side,
+                ..
+            },
+            EngineCommand::CreateView {
+                view: content,
+                spec: tab_spec,
+                ..
+            },
+            EngineCommand::Show { view: shown },
+        ] => {
+            assert_eq!(side.kind, ViewKind::Sidebar);
+            assert_eq!(side.url, "app://ui/sidebar.html");
+            assert_eq!(tab_spec.kind, ViewKind::Content);
+            assert_eq!(tab_spec.url, "about:blank");
+            assert_eq!(shown, content);
+            (*window, *sidebar, *content)
+        }
+        other => panic!("unexpected startup sequence: {other:?}"),
+    };
+    assert_eq!(window, snapshot.window);
+    assert_eq!(sidebar, rig.sidebar);
+
+    let ops: Vec<StoreOp> = rig.batches().into_iter().flatten().collect();
     assert_eq!(
         ops.iter()
             .filter(|op| matches!(op, StoreOp::UpsertProfile(_)))
@@ -173,47 +261,50 @@ async fn bootstrap_creates_one_profile_space_tab_and_window_and_persists_them() 
         1
     );
     assert!(ops.iter().any(|op| matches!(op, StoreOp::UpsertSession(_))));
+    assert_eq!(ops.last(), Some(&StoreOp::SetRev(1)));
 
-    assert!(matches!(rig.startup[0], EngineCommand::CreateWindow { .. }));
-    assert!(matches!(
-        &rig.startup[1],
-        EngineCommand::CreateView { spec, .. }
-            if spec.kind == ViewKind::Sidebar && spec.url == "app://ui/sidebar.html"
-    ));
-    let content = last_content_view(&rig.startup).expect("the selected tab has a view");
-    assert!(matches!(
-        rig.startup.last(),
-        Some(EngineCommand::Show { view }) if *view == content
-    ));
-
-    let snapshot = rig.snapshot().await;
+    assert!(content != sidebar);
+    let shown = all_nodes(&snapshot);
+    assert_eq!(shown.len(), 1);
+    assert!(shown[0].live);
+    assert_eq!(shown[0].url.as_deref(), Some("about:blank"));
+    assert_eq!(snapshot.selected, Some(tab));
     assert_eq!(snapshot.rev, 1);
-    let tabs = all_nodes(&snapshot);
-    assert_eq!(tabs.len(), 1);
-    assert!(tabs[0].live);
-    assert_eq!(tabs[0].url.as_deref(), Some("about:blank"));
-    assert_eq!(snapshot.selected, Some(tabs[0].id));
 }
 
 #[tokio::test]
 #[ignore = "needs m1/model"]
 async fn restore_suspends_every_tab_and_loads_only_the_selected_one() {
-    let (ws, one, two, three, space) = stored_workspace();
+    let (ws, one, two, three, space) = stored_workspace("https://two.example");
     let rig = Rig::start(FakeStore::with_workspace(ws));
 
-    assert!(rig.store.applied().is_empty(), "nothing needed repair");
-    let content_creates = rig
-        .startup
-        .iter()
-        .filter(|command| matches!(command, EngineCommand::CreateView { spec, .. } if spec.kind == ViewKind::Content))
-        .count();
-    assert_eq!(content_creates, 1);
-    assert!(rig.startup.iter().any(|command| matches!(
-        command,
-        EngineCommand::CreateView { spec, .. } if spec.url == "https://two.example"
-    )));
+    let window = match rig.startup.as_slice() {
+        [
+            EngineCommand::CreateWindow { window, .. },
+            EngineCommand::CreateView { spec: sidebar, .. },
+            EngineCommand::CreateView {
+                view: content,
+                spec,
+                ..
+            },
+            EngineCommand::Show { view: shown },
+        ] => {
+            assert_eq!(sidebar.kind, ViewKind::Sidebar);
+            assert_eq!(spec.kind, ViewKind::Content);
+            assert_eq!(spec.url, "https://two.example");
+            assert_eq!(shown, content);
+            *window
+        }
+        other => panic!("unexpected restore sequence: {other:?}"),
+    };
+
+    // Only the revision changed: the selected tab gained a view.
+    let batches = rig.batches();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0], vec![StoreOp::SetRev(4)]);
 
     let snapshot = rig.snapshot().await;
+    assert_eq!(snapshot.window, window);
     assert_eq!(snapshot.active_space, space);
     assert_eq!(snapshot.selected, Some(two));
     assert!(!node(&snapshot, one).live);
@@ -223,41 +314,66 @@ async fn restore_suspends_every_tab_and_loads_only_the_selected_one() {
 
 #[tokio::test]
 #[ignore = "needs m1/model"]
-async fn open_select_and_close_issue_the_right_engine_sequence() {
-    let rig = Rig::empty();
-    rig.engine.take_commands();
-    let first = {
-        let snapshot = rig.snapshot().await;
-        all_nodes(&snapshot)[0].id
-    };
-    let space = space_id(&rig.snapshot().await);
+async fn restore_replaces_an_unloadable_url_with_about_blank_and_keeps_the_stored_value() {
+    let (ws, _, two, _, _) = stored_workspace("javascript:alert(1)");
+    let rig = Rig::start(FakeStore::with_workspace(ws));
 
-    let second = opened(
-        rig.ok(Command::OpenTab {
+    assert!(matches!(
+        rig.startup.iter().find(|command| matches!(command, EngineCommand::CreateView { spec, .. } if spec.kind == ViewKind::Content)),
+        Some(EngineCommand::CreateView { spec, .. }) if spec.url == "about:blank"
+    ));
+    let snapshot = rig.snapshot().await;
+    assert_eq!(snapshot.selected, Some(two));
+    assert_eq!(
+        node(&snapshot, two).url.as_deref(),
+        Some("javascript:alert(1)")
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs m1/model"]
+async fn open_select_and_close_issue_the_full_engine_sequence() {
+    let rig = Rig::empty();
+    let first = all_nodes(&rig.snapshot().await)[0].id;
+    let first_view = last_content_view(&rig.startup).expect("the first tab has a view");
+    let space = space_of(&rig.snapshot().await);
+
+    let (body, step) = run(
+        &rig,
+        Command::OpenTab {
             placement: tab_in_today(space),
             url: "https://b.example".to_owned(),
             activate: true,
-        })
-        .await,
+        },
+    )
+    .await;
+    let second = opened(body);
+    let second_view = match step.commands.as_slice() {
+        [
+            EngineCommand::CreateView { view, spec, .. },
+            EngineCommand::Show { view: shown },
+        ] if spec.kind == ViewKind::Content && spec.url == "https://b.example" => {
+            assert_eq!(shown, view);
+            *view
+        }
+        other => panic!("unexpected open sequence: {other:?}"),
+    };
+    assert_eq!(step.batch.len(), 3, "node, session, rev: {:?}", step.batch);
+
+    let (_, step) = run(&rig, Command::SelectTab { node: first }).await;
+    assert_eq!(
+        step.commands,
+        vec![EngineCommand::Show { view: first_view }]
     );
-    let commands = rig.engine.take_commands();
-    let second_view = last_content_view(&commands).expect("the new tab gets a view");
-    assert!(matches!(commands.as_slice(), [
-        EngineCommand::CreateView { spec, .. },
-        EngineCommand::Show { view },
-    ] if spec.url == "https://b.example" && *view == second_view));
 
-    rig.ok(Command::SelectTab { node: first }).await;
-    let commands = rig.engine.take_commands();
-    assert!(matches!(commands.as_slice(), [EngineCommand::Show { .. }]));
-
-    rig.ok(Command::CloseTab { node: first }).await;
-    let commands = rig.engine.take_commands();
-    assert!(matches!(
-        commands.first(),
-        Some(EngineCommand::Close { .. })
-    ));
-    assert!(matches!(commands.last(), Some(EngineCommand::Show { view }) if *view == second_view));
+    let (_, step) = run(&rig, Command::CloseTab { node: first }).await;
+    assert_eq!(
+        step.commands,
+        vec![
+            EngineCommand::Close { view: first_view },
+            EngineCommand::Show { view: second_view },
+        ]
+    );
 
     let snapshot = rig.snapshot().await;
     assert_eq!(snapshot.selected, Some(second));
@@ -268,34 +384,162 @@ async fn open_select_and_close_issue_the_right_engine_sequence() {
 #[ignore = "needs m1/model"]
 async fn closing_the_last_tab_opens_a_new_blank_tab() {
     let rig = Rig::empty();
-    rig.engine.take_commands();
-    let snapshot = rig.snapshot().await;
-    let only = all_nodes(&snapshot)[0].id;
+    let only = all_nodes(&rig.snapshot().await)[0].id;
+    let only_view = last_content_view(&rig.startup).expect("the tab has a view");
 
-    rig.ok(Command::CloseTab { node: only }).await;
-    let commands = rig.engine.take_commands();
-    assert!(matches!(
-        commands.first(),
-        Some(EngineCommand::Close { .. })
-    ));
-    assert!(matches!(
-        commands.iter().find(|command| matches!(command, EngineCommand::CreateView { .. })),
-        Some(EngineCommand::CreateView { spec, .. }) if spec.url == "about:blank"
-    ));
+    let (_, step) = run(&rig, Command::CloseTab { node: only }).await;
+    match step.commands.as_slice() {
+        [
+            EngineCommand::Close { view },
+            EngineCommand::CreateView {
+                view: created,
+                spec,
+                ..
+            },
+            EngineCommand::Show { view: shown },
+        ] if spec.url == "about:blank" => {
+            assert_eq!(*view, only_view);
+            assert_eq!(shown, created);
+        }
+        other => panic!("unexpected close sequence: {other:?}"),
+    }
 
     let snapshot = rig.snapshot().await;
     let tabs = all_nodes(&snapshot);
     assert_eq!(tabs.len(), 1);
     assert_ne!(tabs[0].id, only);
     assert_eq!(snapshot.selected, Some(tabs[0].id));
+    assert!(node(&snapshot, tabs[0].id).live);
+}
+
+#[tokio::test]
+#[ignore = "needs m1/model"]
+async fn closing_the_selected_tab_selects_the_previous_sibling_when_there_is_no_next() {
+    let rig = Rig::empty();
+    let space = space_of(&rig.snapshot().await);
+    let first = all_nodes(&rig.snapshot().await)[0].id;
+    let kept = opened(
+        rig.ok(Command::OpenTab {
+            placement: tab_in_today(space),
+            url: "https://b.example".to_owned(),
+            activate: false,
+        })
+        .await,
+    );
+    let (body, _) = run(
+        &rig,
+        Command::OpenTab {
+            placement: tab_in_today(space),
+            url: "https://c.example".to_owned(),
+            activate: true,
+        },
+    )
+    .await;
+    let last = opened(body);
+
+    let (_, step) = run(&rig, Command::CloseTab { node: last }).await;
+    assert!(matches!(
+        step.commands.as_slice(),
+        [
+            EngineCommand::Close { .. },
+            EngineCommand::CreateView { spec, .. },
+            EngineCommand::Show { .. },
+        ] if spec.url == "https://b.example"
+    ));
+    let snapshot = rig.snapshot().await;
+    assert_eq!(snapshot.selected, Some(kept));
+    assert_ne!(snapshot.selected, Some(first));
+}
+
+#[tokio::test]
+#[ignore = "needs m1/model"]
+async fn closing_a_selected_tab_falls_back_to_another_tab_of_the_space() {
+    let rig = Rig::empty();
+    let space = space_of(&rig.snapshot().await);
+    let home = all_nodes(&rig.snapshot().await)[0].id;
+    rig.ok(Command::CreateFolder {
+        placement: tab_in_today(space),
+        title: "Group".to_owned(),
+    })
+    .await;
+    let group = folder_titled(&rig, "Group").await;
+    let inside = opened(
+        rig.ok(Command::OpenTab {
+            placement: Placement {
+                space,
+                container: ContainerKind::Today,
+                parent: Some(group),
+                before: None,
+            },
+            url: "https://inside.example".to_owned(),
+            activate: true,
+        })
+        .await,
+    );
+
+    let (_, step) = run(&rig, Command::CloseTab { node: inside }).await;
+    assert!(matches!(
+        step.commands.first(),
+        Some(EngineCommand::Close { .. })
+    ));
+    assert!(matches!(
+        step.commands.last(),
+        Some(EngineCommand::Show { .. })
+    ));
+    assert_eq!(
+        step.commands.len(),
+        2,
+        "no new tab: another tab of the space is selected"
+    );
+    assert_eq!(rig.snapshot().await.selected, Some(home));
+}
+
+#[tokio::test]
+#[ignore = "needs m1/model"]
+async fn closing_a_folder_with_children_is_a_conflict_and_an_empty_one_is_deleted() {
+    let rig = Rig::empty();
+    let space = space_of(&rig.snapshot().await);
+    rig.ok(Command::CreateFolder {
+        placement: tab_in_today(space),
+        title: "Full".to_owned(),
+    })
+    .await;
+    let folder = folder_titled(&rig, "Full").await;
+    let child = opened(
+        rig.ok(Command::OpenTab {
+            placement: Placement {
+                space,
+                container: ContainerKind::Today,
+                parent: Some(folder),
+                before: None,
+            },
+            url: "https://child.example".to_owned(),
+            activate: false,
+        })
+        .await,
+    );
+
+    let error = rig
+        .send(Command::CloseTab { node: folder })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict);
+    assert_eq!(error.message, "folder not empty");
+
+    rig.ok(Command::CloseTab { node: child }).await;
+    rig.ok(Command::CloseTab { node: folder }).await;
+    assert!(
+        !all_nodes(&rig.snapshot().await)
+            .iter()
+            .any(|candidate| candidate.id == folder)
+    );
 }
 
 #[tokio::test]
 #[ignore = "needs m1/model"]
 async fn moving_a_folder_across_containers_rewrites_its_children() {
     let rig = Rig::empty();
-    rig.engine.take_commands();
-    let space = space_id(&rig.snapshot().await);
+    let space = space_of(&rig.snapshot().await);
     rig.ok(Command::CreateFolder {
         placement: tab_in_today(space),
         title: "Work".to_owned(),
@@ -316,22 +560,25 @@ async fn moving_a_folder_across_containers_rewrites_its_children() {
         .await,
     );
 
-    rig.ok(Command::MoveNode {
-        node: folder,
-        to: Placement {
-            space,
-            container: ContainerKind::Pinned,
-            parent: None,
-            before: None,
+    let (_, step) = run(
+        &rig,
+        Command::MoveNode {
+            node: folder,
+            to: Placement {
+                space,
+                container: ContainerKind::Pinned,
+                parent: None,
+                before: None,
+            },
         },
-    })
+    )
     .await;
-
-    let last = rig.store.applied().pop().expect("the move persisted");
     assert!(
-        last.iter()
+        step.batch
+            .iter()
             .any(|op| matches!(op, StoreOp::UpsertNode(n) if n.id == child))
     );
+
     let snapshot = rig.snapshot().await;
     let pinned = snapshot.spaces[0]
         .containers
@@ -379,8 +626,7 @@ async fn moving_a_tab_to_another_profile_is_a_conflict() {
 #[ignore = "needs m1/model"]
 async fn moving_a_folder_into_its_own_subtree_is_a_conflict() {
     let rig = Rig::empty();
-    rig.engine.take_commands();
-    let space = space_id(&rig.snapshot().await);
+    let space = space_of(&rig.snapshot().await);
     rig.ok(Command::CreateFolder {
         placement: tab_in_today(space),
         title: "Outer".to_owned(),
@@ -416,7 +662,146 @@ async fn moving_a_folder_into_its_own_subtree_is_a_conflict() {
 
 #[tokio::test]
 #[ignore = "needs m1/model"]
-async fn a_stale_navigation_callback_is_dropped() {
+async fn moving_the_selected_tab_into_another_space_switches_the_active_space() {
+    let rig = Rig::empty();
+    let home = space_of(&rig.snapshot().await);
+    let other = match run(
+        &rig,
+        Command::CreateSpace {
+            name: "Work".to_owned(),
+        },
+    )
+    .await
+    .0
+    {
+        ResponseBody::SpaceCreated { space, .. } => space,
+        other => panic!("expected SpaceCreated, got {other:?}"),
+    };
+    rig.ok(Command::CreateFolder {
+        placement: tab_in_today(home),
+        title: "Carry".to_owned(),
+    })
+    .await;
+    let folder = folder_titled(&rig, "Carry").await;
+    let child = opened(
+        rig.ok(Command::OpenTab {
+            placement: Placement {
+                space: home,
+                container: ContainerKind::Today,
+                parent: Some(folder),
+                before: None,
+            },
+            url: "https://carried.example".to_owned(),
+            activate: true,
+        })
+        .await,
+    );
+
+    rig.ok(Command::MoveNode {
+        node: folder,
+        to: Placement {
+            space: other,
+            container: ContainerKind::Pinned,
+            parent: None,
+            before: None,
+        },
+    })
+    .await;
+    let snapshot = rig.snapshot().await;
+    assert_eq!(snapshot.active_space, other);
+    assert_eq!(snapshot.selected, Some(child));
+    assert!(node(&snapshot, child).live);
+}
+
+#[tokio::test]
+#[ignore = "needs m1/model"]
+async fn moving_the_selected_tab_to_the_archive_selects_another_tab() {
+    let rig = Rig::empty();
+    let space = space_of(&rig.snapshot().await);
+    let selected = all_nodes(&rig.snapshot().await)[0].id;
+    let selected_view = last_content_view(&rig.startup).expect("the tab has a view");
+    let other = opened(
+        rig.ok(Command::OpenTab {
+            placement: tab_in_today(space),
+            url: "https://other.example".to_owned(),
+            activate: false,
+        })
+        .await,
+    );
+
+    let (_, step) = run(
+        &rig,
+        Command::MoveNode {
+            node: selected,
+            to: Placement {
+                space,
+                container: ContainerKind::Archive,
+                parent: None,
+                before: None,
+            },
+        },
+    )
+    .await;
+    assert!(matches!(
+        step.commands.as_slice(),
+        [
+            EngineCommand::Close { view },
+            EngineCommand::CreateView { spec, .. },
+            EngineCommand::Show { .. },
+        ] if *view == selected_view && spec.url == "https://other.example"
+    ));
+    let snapshot = rig.snapshot().await;
+    assert_eq!(snapshot.selected, Some(other));
+    assert!(!node(&snapshot, selected).live);
+}
+
+#[tokio::test]
+#[ignore = "needs m1/model"]
+async fn select_space_restores_the_last_selected_tab_or_opens_a_blank_one() {
+    let rig = Rig::empty();
+    let home = space_of(&rig.snapshot().await);
+    let home_tab = all_nodes(&rig.snapshot().await)[0].id;
+    let other = match rig
+        .ok(Command::CreateSpace {
+            name: "Work".to_owned(),
+        })
+        .await
+    {
+        ResponseBody::SpaceCreated { space, .. } => space,
+        other => panic!("expected SpaceCreated, got {other:?}"),
+    };
+
+    let (_, step) = run(&rig, Command::SelectSpace { space: other }).await;
+    assert!(matches!(
+        step.commands.as_slice(),
+        [EngineCommand::CreateView { spec, .. }, EngineCommand::Show { .. }] if spec.url == "about:blank"
+    ));
+    let snapshot = rig.snapshot().await;
+    assert_eq!(snapshot.active_space, other);
+    let blank = snapshot.selected.expect("a blank tab is selected");
+    assert_ne!(blank, home_tab);
+
+    let (_, step) = run(&rig, Command::SelectSpace { space: home }).await;
+    assert!(matches!(
+        step.commands.as_slice(),
+        [EngineCommand::Show { .. }]
+    ));
+    let snapshot = rig.snapshot().await;
+    assert_eq!(snapshot.active_space, home);
+    assert_eq!(snapshot.selected, Some(home_tab));
+
+    let error = rig
+        .send(Command::SelectSpace {
+            space: SpaceId::new(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::NotFound);
+}
+
+#[tokio::test]
+#[ignore = "needs m1/model"]
+async fn stale_navigation_callback_is_dropped() {
     let rig = Rig::empty();
     let view = last_content_view(&rig.startup).expect("the first tab has a view");
     rig.emit(EngineEvent::Navigated {
@@ -491,6 +876,43 @@ async fn title_and_url_move_together_across_navigations() {
 
 #[tokio::test]
 #[ignore = "needs m1/model"]
+async fn crashed_view_turns_the_node_not_live_and_bumps_the_revision() {
+    let rig = Rig::empty();
+    let view = last_content_view(&rig.startup).expect("the tab has a view");
+    let tab = all_nodes(&rig.snapshot().await)[0].id;
+    let before = rig.snapshot().await.rev;
+
+    let snapshot = rig.emit(EngineEvent::Crashed { view }).await;
+    assert!(!node(&snapshot, tab).live);
+    assert_eq!(snapshot.rev, before + 1);
+    assert_eq!(
+        rig.batches().last().and_then(|batch| batch.last()),
+        Some(&StoreOp::SetRev(before + 1))
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs m1/model"]
+async fn a_store_failure_while_handling_an_engine_event_leaves_the_state_consistent() {
+    let rig = Rig::empty();
+    let view = last_content_view(&rig.startup).expect("the tab has a view");
+    let before = rig.snapshot().await;
+
+    rig.store.fail_next_apply();
+    let snapshot = rig.emit(EngineEvent::Crashed { view }).await;
+
+    assert_eq!(
+        snapshot.rev, before.rev,
+        "the failed change did not bump the revision"
+    );
+    assert!(
+        node(&snapshot, all_nodes(&before)[0].id).live,
+        "the view mapping is kept"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs m1/model"]
 async fn a_store_failure_leaves_the_state_and_the_engine_untouched() {
     let rig = Rig::empty();
     rig.engine.take_commands();
@@ -499,7 +921,7 @@ async fn a_store_failure_leaves_the_state_and_the_engine_untouched() {
     rig.store.fail_next_apply();
     let error = rig
         .send(Command::OpenTab {
-            placement: tab_in_today(space_id(&before)),
+            placement: tab_in_today(space_of(&before)),
             url: "https://x.example".to_owned(),
             activate: true,
         })
@@ -519,26 +941,127 @@ async fn a_store_failure_leaves_the_state_and_the_engine_untouched() {
 
 #[tokio::test]
 #[ignore = "needs m1/model"]
-async fn a_ui_principal_for_an_unregistered_view_is_refused() {
+async fn a_restricted_principal_is_refused_every_command_through_the_handle() {
     let rig = Rig::empty();
-    let request = Request {
-        v: API_VERSION,
-        id: 9,
-        body: Body::Query(Query::Snapshot),
-    };
+    let node_id = all_nodes(&rig.snapshot().await)[0].id;
+    let space = space_of(&rig.snapshot().await);
+    rig.engine.take_commands();
+    let before = rig.batches().len();
+
+    for command in every_command(node_id, space) {
+        let error = rig
+            .send_as(Principal::Restricted, command)
+            .await
+            .expect_err("a restricted principal is refused");
+        assert_eq!(error.code, ErrorCode::Forbidden);
+    }
     let response = rig
         .handle
         .request(
-            Principal::Ui {
-                view: ViewId(u64::MAX),
+            Principal::Restricted,
+            Request {
+                v: API_VERSION,
+                id: 4,
+                body: Body::Query(Query::Snapshot),
             },
-            request,
         )
         .await;
     assert!(matches!(
         response.result,
         ApiResult::Err { error } if error.code == ErrorCode::Forbidden
     ));
+    assert!(rig.engine.take_commands().is_empty());
+    assert_eq!(
+        rig.batches().len(),
+        before,
+        "a refused command writes nothing"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs m1/model"]
+async fn app_ui_urls_are_refused_for_every_principal() {
+    let rig = Rig::empty();
+    let space = space_of(&rig.snapshot().await);
+    let node_id = all_nodes(&rig.snapshot().await)[0].id;
+    let app = "app://ui/sidebar.html".to_owned();
+
+    let error = rig
+        .send(Command::OpenTab {
+            placement: tab_in_today(space),
+            url: app.clone(),
+            activate: true,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::BadRequest);
+
+    let error = rig
+        .send(Command::Navigate {
+            node: node_id,
+            url: app.clone(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::BadRequest);
+
+    let request = Request {
+        v: API_VERSION,
+        id: 5,
+        body: Body::Command(Command::OpenTab {
+            placement: tab_in_today(space),
+            url: app,
+            activate: true,
+        }),
+    };
+    let response = rig.handle.request(Principal::System, request).await;
+    assert!(matches!(
+        response.result,
+        ApiResult::Err { error } if error.code == ErrorCode::BadRequest
+    ));
+}
+
+#[tokio::test]
+#[ignore = "needs m1/model"]
+async fn a_recreated_sidebar_replaces_the_old_ui_principal() {
+    let rig = Rig::empty();
+    let old = rig.sidebar;
+
+    rig.events_in.send(EngineEvent::Closed { view: old });
+    let refused = rig
+        .handle
+        .request(
+            Principal::Ui { view: old },
+            Request {
+                v: API_VERSION,
+                id: 6,
+                body: Body::Query(Query::Snapshot),
+            },
+        )
+        .await;
+    assert!(matches!(
+        refused.result,
+        ApiResult::Err { error } if error.code == ErrorCode::Forbidden
+    ));
+
+    let created = rig.engine.take_commands();
+    let fresh = match created.as_slice() {
+        [EngineCommand::CreateView { view, spec, .. }] if spec.kind == ViewKind::Sidebar => *view,
+        other => panic!("expected one sidebar CreateView, got {other:?}"),
+    };
+    assert_ne!(fresh, old);
+    let accepted = rig
+        .handle
+        .request(
+            Principal::Ui { view: fresh },
+            Request {
+                v: API_VERSION,
+                id: 7,
+                body: Body::Query(Query::Snapshot),
+            },
+        )
+        .await;
+    assert!(matches!(accepted.result, ApiResult::Ok { .. }));
 }
 
 #[tokio::test]
@@ -559,9 +1082,32 @@ async fn a_version_mismatch_is_refused() {
 
 #[tokio::test]
 #[ignore = "needs m1/model"]
+async fn an_unregistered_ui_view_is_refused() {
+    let rig = Rig::empty();
+    let response = rig
+        .handle
+        .request(
+            Principal::Ui {
+                view: ViewId(u64::MAX),
+            },
+            Request {
+                v: API_VERSION,
+                id: 9,
+                body: Body::Query(Query::Snapshot),
+            },
+        )
+        .await;
+    assert!(matches!(
+        response.result,
+        ApiResult::Err { error } if error.code == ErrorCode::Forbidden
+    ));
+}
+
+#[tokio::test]
+#[ignore = "needs m1/model"]
 async fn published_events_carry_increasing_revisions() {
     let rig = Rig::empty();
-    let space = space_id(&rig.snapshot().await);
+    let space = space_of(&rig.snapshot().await);
     let mut events = rig.handle.subscribe();
 
     let mut last = 0;
@@ -574,7 +1120,7 @@ async fn published_events_carry_increasing_revisions() {
             .await;
         let event = events.try_recv().expect("the commit published an event");
         assert_eq!(event.topic, Topic::Tree);
-        assert_eq!(event.rev, rev(&body));
+        assert_eq!(event.rev, rev_of(&body));
         assert!(event.rev > last);
         last = event.rev;
     }
@@ -584,14 +1130,19 @@ async fn published_events_carry_increasing_revisions() {
 #[ignore = "needs m1/model"]
 async fn the_snapshot_nests_children_and_flags_only_live_nodes() {
     let rig = Rig::empty();
-    rig.engine.take_commands();
-    let space = space_id(&rig.snapshot().await);
-    rig.ok(Command::CreateFolder {
-        placement: tab_in_today(space),
-        title: "Folder".to_owned(),
-    })
-    .await;
-    let folder = folder_titled(&rig, "Folder").await;
+    let space = space_of(&rig.snapshot().await);
+    let folder = opened(
+        rig.ok(Command::CreateFolder {
+            placement: tab_in_today(space),
+            title: "Folder".to_owned(),
+        })
+        .await,
+    );
+    assert_eq!(
+        folder_titled(&rig, "Folder").await,
+        folder,
+        "CreateFolder answers with the new node"
+    );
     let child = opened(
         rig.ok(Command::OpenTab {
             placement: Placement {
@@ -631,8 +1182,7 @@ async fn the_snapshot_nests_children_and_flags_only_live_nodes() {
 #[ignore = "needs m1/model"]
 async fn navigating_a_suspended_tab_creates_a_view_without_showing_it() {
     let rig = Rig::empty();
-    rig.engine.take_commands();
-    let space = space_id(&rig.snapshot().await);
+    let space = space_of(&rig.snapshot().await);
     let background = opened(
         rig.ok(Command::OpenTab {
             placement: tab_in_today(space),
@@ -641,19 +1191,61 @@ async fn navigating_a_suspended_tab_creates_a_view_without_showing_it() {
         })
         .await,
     );
-    rig.engine.take_commands();
 
-    rig.ok(Command::Navigate {
-        node: background,
-        url: "https://next.example".to_owned(),
-    })
+    let (_, step) = run(
+        &rig,
+        Command::Navigate {
+            node: background,
+            url: "https://next.example".to_owned(),
+        },
+    )
     .await;
-
-    let commands = rig.engine.take_commands();
-    assert!(
-        matches!(commands.as_slice(), [EngineCommand::CreateView { spec, .. }] if spec.url == "https://next.example")
-    );
+    assert!(matches!(
+        step.commands.as_slice(),
+        [EngineCommand::CreateView { spec, .. }] if spec.url == "https://next.example"
+    ));
     assert!(node(&rig.snapshot().await, background).live);
+}
+
+#[tokio::test]
+#[ignore = "needs m1/model"]
+async fn a_popup_from_a_favorites_tab_opens_in_the_active_space() {
+    let rig = Rig::empty();
+    let space = space_of(&rig.snapshot().await);
+    let favorite = opened(
+        rig.ok(Command::OpenTab {
+            placement: Placement {
+                space,
+                container: ContainerKind::Favorites,
+                parent: None,
+                before: None,
+            },
+            url: "https://favorite.example".to_owned(),
+            activate: true,
+        })
+        .await,
+    );
+    let view = last_content_view(&rig.engine.take_commands()).expect("the favorite has a view");
+
+    let snapshot = rig
+        .emit(EngineEvent::PopupRequested {
+            opener: view,
+            url: "https://popup.example".to_owned(),
+            user_gesture: true,
+        })
+        .await;
+    let popup = all_nodes(&snapshot)
+        .into_iter()
+        .find(|tab| tab.url.as_deref() == Some("https://popup.example"))
+        .expect("the popup became a tab");
+    let today = snapshot.spaces[0]
+        .containers
+        .iter()
+        .find(|container| container.kind == ContainerKind::Today)
+        .expect("the today container");
+    assert!(today.nodes.iter().any(|candidate| candidate.id == popup.id));
+    assert_eq!(snapshot.selected, Some(popup.id));
+    assert_ne!(popup.id, favorite);
 }
 
 #[tokio::test]
@@ -687,42 +1279,150 @@ async fn a_popup_opens_a_tab_only_with_a_user_gesture() {
 
 #[tokio::test]
 #[ignore = "needs m1/model"]
+async fn a_burst_of_title_changes_does_not_hold_back_commands_or_flood_the_store() {
+    let rig = Rig::empty();
+    let view = last_content_view(&rig.startup).expect("the tab has a view");
+    let space = space_of(&rig.snapshot().await);
+    rig.emit(EngineEvent::Navigated {
+        view,
+        nav_gen: 1,
+        url: "https://busy.example".to_owned(),
+    })
+    .await;
+    let batches_before = rig.batches().len();
+
+    let mut worst = Duration::ZERO;
+    for index in 0..1000 {
+        rig.events_in.send(EngineEvent::TitleChanged {
+            view,
+            nav_gen: 1,
+            title: format!("title {index}"),
+        });
+        if index % 100 == 50 {
+            let started = Instant::now();
+            rig.ok(Command::CreateFolder {
+                placement: tab_in_today(space),
+                title: format!("folder {index}"),
+            })
+            .await;
+            worst = worst.max(started.elapsed());
+        }
+    }
+    let snapshot = rig.snapshot().await;
+    assert_eq!(
+        node(&snapshot, all_nodes(&snapshot)[0].id).title,
+        "title 999"
+    );
+    assert!(
+        worst < Duration::from_millis(500),
+        "a command waited {worst:?} behind the burst"
+    );
+    // Ten folder commands write one batch each; the burst itself adds at most two flushes.
+    let issued = rig.batches().len() - batches_before;
+    assert!(
+        issued <= 10 + 2,
+        "the burst produced {issued} store batches"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs m1/model"]
+async fn title_changes_reach_the_store_within_one_flush_interval() {
+    let rig = Rig::empty();
+    let view = last_content_view(&rig.startup).expect("the tab has a view");
+    let tab = all_nodes(&rig.snapshot().await)[0].id;
+    rig.emit(EngineEvent::Navigated {
+        view,
+        nav_gen: 1,
+        url: "https://persist.example".to_owned(),
+    })
+    .await;
+    rig.emit(EngineEvent::TitleChanged {
+        view,
+        nav_gen: 1,
+        title: "Persisted".to_owned(),
+    })
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let persisted = rig.batches().into_iter().flatten().any(
+        |op| matches!(op, StoreOp::UpsertNode(node) if node.id == tab && node.title == "Persisted"),
+    );
+    assert!(persisted, "the coalesced title was flushed");
+}
+
+#[tokio::test]
+#[ignore = "needs m1/model"]
+async fn shutdown_flushes_pending_writes_stops_the_core_and_is_idempotent() {
+    let rig = Rig::empty();
+    let view = last_content_view(&rig.startup).expect("the tab has a view");
+    let tab = all_nodes(&rig.snapshot().await)[0].id;
+    rig.emit(EngineEvent::Navigated {
+        view,
+        nav_gen: 1,
+        url: "https://last.example".to_owned(),
+    })
+    .await;
+    rig.emit(EngineEvent::TitleChanged {
+        view,
+        nav_gen: 1,
+        title: "Last".to_owned(),
+    })
+    .await;
+
+    rig.handle.shutdown();
+    let flushed = rig.batches().into_iter().flatten().any(
+        |op| matches!(op, StoreOp::UpsertNode(node) if node.id == tab && node.title == "Last"),
+    );
+    assert!(flushed, "shutdown flushed the pending title");
+
+    rig.handle.shutdown();
+    let response = rig
+        .handle
+        .request(
+            rig.ui(),
+            Request {
+                v: API_VERSION,
+                id: 8,
+                body: Body::Query(Query::Snapshot),
+            },
+        )
+        .await;
+    assert!(matches!(
+        response.result,
+        ApiResult::Err { error } if error.code == ErrorCode::Internal
+    ));
+}
+
+#[tokio::test]
+#[ignore = "needs m1/model"]
 async fn closing_the_window_stops_the_actor() {
     let rig = Rig::empty();
     let window = rig.snapshot().await.window;
-    rig.handle
-        .engine_events()
-        .send(EngineEvent::WindowClosed { window })
-        .expect("the actor is running");
+    rig.events_in.send(EngineEvent::WindowClosed { window });
 
-    let mut stopped = false;
-    for _ in 0..200 {
-        let response = rig
-            .handle
-            .request(
-                rig.ui(),
-                Request {
-                    v: API_VERSION,
-                    id: 3,
-                    body: Body::Query(Query::Snapshot),
-                },
-            )
-            .await;
-        if matches!(response.result, ApiResult::Err { error } if error.code == ErrorCode::Internal)
-        {
-            stopped = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    assert!(stopped, "the actor stops after the window closes");
+    let response = rig
+        .handle
+        .request(
+            rig.ui(),
+            Request {
+                v: API_VERSION,
+                id: 3,
+                body: Body::Query(Query::Snapshot),
+            },
+        )
+        .await;
+    assert!(matches!(
+        response.result,
+        ApiResult::Err { error } if error.code == ErrorCode::Internal
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs m1/model"]
 async fn concurrent_requests_are_totally_ordered() {
     let rig = Rig::empty();
-    let space = space_id(&rig.snapshot().await);
+    let space = space_of(&rig.snapshot().await);
     let mut tasks = Vec::new();
     for index in 0..40 {
         let handle = rig.handle.clone();
@@ -737,7 +1437,7 @@ async fn concurrent_requests_are_totally_ordered() {
                 }),
             };
             match handle.request(principal, request).await.result {
-                ApiResult::Ok { body } => rev(&body),
+                ApiResult::Ok { body } => rev_of(&body),
                 ApiResult::Err { error } => panic!("{error}"),
             }
         }));
@@ -755,7 +1455,7 @@ async fn concurrent_requests_are_totally_ordered() {
     assert_eq!(rig.snapshot().await.rev, 41);
 }
 
-/// Creating a folder answers with an acknowledgement, so the test finds the folder by its title.
+/// The id of the folder titled `title`.
 async fn folder_titled(rig: &Rig, title: &str) -> NodeId {
     all_nodes(&rig.snapshot().await)
         .into_iter()

@@ -7,15 +7,15 @@ use crate::error::{
     bad_request, internal, not_found, position as position_error, tree as tree_error,
 };
 use crate::navigation::NavTrack;
-use crate::urls::{NEW_TAB_URL, SIDEBAR_URL};
+use crate::urls::{self, SIDEBAR_URL};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 use yaac_api::{ApiError, ContainerView, NodeView, Placement, Snapshot, SpaceView, Topic};
 use yaac_engine::{EngineCommand, ViewKind, ViewSpec};
 use yaac_model::{
     Container, ContainerId, ContainerKind, Millis, Node, NodeId, NodeKind, NodeState, Position,
-    Profile, ProfileId, ProfileKind, SessionState, Space, SpaceId, TreeError, ViewId, WindowId,
-    Workspace,
+    Profile, ProfileId, ProfileKind, SessionState, Space, SpaceId, TreeError, TreeState, ViewId,
+    WindowId, Workspace,
 };
 
 pub(crate) const SIDEBAR_WIDTH: u32 = 280;
@@ -30,16 +30,21 @@ pub(crate) struct State {
     pub(crate) view_nodes: BTreeMap<ViewId, NodeId>,
     pub(crate) nav: BTreeMap<ViewId, NavTrack>,
     pub(crate) next_view: u64,
+    /// The tab each Space last had selected. Runtime only: `SessionState` has no field for it, so
+    /// after a restart `SelectSpace` falls back to the first today tab.
+    pub(crate) last_selected: BTreeMap<SpaceId, NodeId>,
 }
 
-/// One committed-or-discarded transaction: the next state, the store ops, the engine commands
-/// (sent only after the commit), and the topic to publish (`None` when nothing visible changed).
+/// One transaction's result: the next state, the store ops, the engine commands (sent only after the
+/// commit), and the topic to publish (`None` when nothing visible changed). `coalesce` marks changes
+/// that the actor may persist on its next flush instead of at once.
 #[derive(Debug)]
 pub(crate) struct Plan {
     pub(crate) state: State,
     pub(crate) ops: Vec<StoreOp>,
     pub(crate) effects: Vec<EngineCommand>,
     pub(crate) topic: Option<Topic>,
+    pub(crate) coalesce: bool,
 }
 
 pub(crate) struct Tx {
@@ -61,7 +66,7 @@ impl Tx {
         }
     }
 
-    /// Bumps the revision once if anything visible changed.
+    /// Bumps the revision once if anything visible changed, and records it in the batch.
     pub(crate) fn finish(mut self) -> Plan {
         let topic = if self.tree_changed {
             Some(Topic::Tree)
@@ -72,12 +77,14 @@ impl Tx {
         };
         if topic.is_some() {
             self.state.ws.rev += 1;
+            self.ops.push(StoreOp::SetRev(self.state.ws.rev));
         }
         Plan {
             state: self.state,
             ops: self.ops,
             effects: self.effects,
             topic,
+            coalesce: false,
         }
     }
 
@@ -179,6 +186,71 @@ impl Tx {
             .ok_or_else(|| not_found(format!("the space has no {kind:?} container")))
     }
 
+    pub(crate) fn has_children(&self, node: NodeId) -> Result<bool, ApiError> {
+        let container = self.node(node)?.container_id;
+        Ok(!self
+            .state
+            .ws
+            .tree
+            .children(container, Some(node))
+            .is_empty())
+    }
+
+    /// The tabs of one container, depth first in document order.
+    pub(crate) fn tabs_of_container(&self, container: ContainerId) -> Vec<NodeId> {
+        fn walk(
+            tree: &TreeState,
+            container: ContainerId,
+            parent: Option<NodeId>,
+            out: &mut Vec<NodeId>,
+        ) {
+            for node in tree.children(container, parent) {
+                if node.kind == NodeKind::Tab {
+                    out.push(node.id);
+                }
+                walk(tree, container, Some(node.id), out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.state.ws.tree, container, None, &mut out);
+        out
+    }
+
+    /// The open tabs of a Space (pinned and today; archived tabs are not open). `prefer` is searched
+    /// first.
+    pub(crate) fn tabs_in_space(&self, space: SpaceId, prefer: Option<ContainerId>) -> Vec<NodeId> {
+        let Ok(profile) = self.space(space).map(|found| found.profile_id) else {
+            return Vec::new();
+        };
+        let mut containers: Vec<ContainerId> = [ContainerKind::Pinned, ContainerKind::Today]
+            .into_iter()
+            .filter_map(|kind| find_container(&self.state.ws, profile, Some(space), kind))
+            .map(|container| container.id)
+            .collect();
+        if let Some(preferred) = prefer
+            && let Some(index) = containers.iter().position(|id| *id == preferred)
+        {
+            let chosen = containers.remove(index);
+            containers.insert(0, chosen);
+        }
+        containers
+            .into_iter()
+            .flat_map(|container| self.tabs_of_container(container))
+            .collect()
+    }
+
+    /// The tab a Space last had selected, if it still is an open tab of that Space.
+    pub(crate) fn last_selected_tab(&self, space: SpaceId) -> Option<NodeId> {
+        let node = self.state.last_selected.get(&space).copied()?;
+        let found = self.state.ws.tree.get(node)?;
+        if found.kind != NodeKind::Tab {
+            return None;
+        }
+        let container = self.state.ws.containers.get(&found.container_id)?;
+        (container.space_id == Some(space) && container.kind != ContainerKind::Archive)
+            .then_some(node)
+    }
+
     // Durable state.
 
     pub(crate) fn put_profile(&mut self, profile: Profile) {
@@ -253,7 +325,7 @@ impl Tx {
         Ok(())
     }
 
-    /// Adds a node at a placement. Does not select or create a view.
+    /// Adds a node at a placement. Does not select it or create a view.
     pub(crate) fn insert_node(
         &mut self,
         placement: &Placement,
@@ -339,14 +411,15 @@ impl Tx {
         self.session_changed = true;
     }
 
-    // Views. Runtime only: no store op, but every change bumps the revision.
+    // Views. Runtime only: no node op, but every change bumps the revision.
 
     fn alloc_view(&mut self) -> ViewId {
         self.state.next_view += 1;
         ViewId(self.state.next_view)
     }
 
-    pub(crate) fn attach_sidebar(&mut self, profile: ProfileId) {
+    /// Creates a sidebar view and registers it as a UI principal.
+    pub(crate) fn attach_sidebar(&mut self, profile: ProfileId) -> ViewId {
         let view = self.alloc_view();
         self.effects.push(EngineCommand::CreateView {
             view,
@@ -358,9 +431,15 @@ impl Tx {
             },
         });
         self.state.sidebar_views.insert(view);
+        view
     }
 
-    /// Creates the content view of a node with `url` as its starting page, and shows it when asked.
+    /// Stops treating a sidebar view as a UI principal. Its requests are refused from now on.
+    pub(crate) fn forget_sidebar(&mut self, view: ViewId) {
+        self.state.sidebar_views.remove(&view);
+    }
+
+    /// Creates the content view of a node, starting on `url`, and shows it when asked.
     pub(crate) fn attach_view(
         &mut self,
         node: NodeId,
@@ -404,19 +483,21 @@ impl Tx {
         self.state.nav.insert(view, track);
     }
 
-    /// Makes a tab the selected one. A suspended tab gets its view first.
+    /// Makes a tab the selected one. A suspended tab gets its view first, starting on its stored
+    /// URL when that URL passes `urls::check`.
     pub(crate) fn select(&mut self, node: NodeId) -> Result<(), ApiError> {
         let tab = self.tab(node)?;
         match self.view_of(node) {
             Some(view) => self.emit(EngineCommand::Show { view }),
             None => {
-                self.attach_view(node, url_or_blank(&tab), true)?;
+                self.attach_view(node, urls::load_url(&tab), true)?;
             }
         }
         let mut session = self.session()?;
         session.selected_node_id = Some(node);
         if let Some(space) = self.container(tab.container_id)?.space_id {
             session.space_id = space;
+            self.state.last_selected.insert(space, node);
         }
         self.put_session(session);
         Ok(())
@@ -526,10 +607,6 @@ pub(crate) fn now_millis() -> Millis {
         .ok()
         .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
         .unwrap_or(0)
-}
-
-pub(crate) fn url_or_blank(node: &Node) -> String {
-    node.url.clone().unwrap_or_else(|| NEW_TAB_URL.to_owned())
 }
 
 /// The container of `kind` for a Space. Favorites belong to the profile and have no Space.

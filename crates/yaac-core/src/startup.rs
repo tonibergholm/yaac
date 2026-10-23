@@ -3,8 +3,8 @@
 //! gets a view.
 
 use crate::error::internal;
-use crate::state::{Plan, SIDEBAR_WIDTH, State, Tx, now_millis, url_or_blank};
-use crate::urls::NEW_TAB_URL;
+use crate::state::{Plan, SIDEBAR_WIDTH, State, Tx, now_millis};
+use crate::urls::{NEW_TAB_URL, load_url};
 use crate::{CoreError, StoreError};
 use yaac_api::{ApiError, Placement};
 use yaac_engine::{EngineCommand, WindowSpec};
@@ -140,7 +140,7 @@ fn reconcile(tx: &mut Tx) -> Result<(), ApiError> {
     });
     tx.attach_sidebar(profile);
     tx.put_session(session);
-    let url = url_or_blank(tx.node(node)?);
+    let url = load_url(tx.node(node)?);
     tx.attach_view(node, url, true)?;
     Ok(())
 }

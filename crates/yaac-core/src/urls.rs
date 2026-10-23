@@ -1,15 +1,15 @@
-//! Checks on the URLs a caller asks the core to load.
+//! Checks on the URLs the core loads into content views.
 
 use crate::error::bad_request;
 use yaac_api::ApiError;
+use yaac_model::Node;
 
 pub(crate) const NEW_TAB_URL: &str = "about:blank";
 pub(crate) const SIDEBAR_URL: &str = "app://ui/sidebar.html";
-const UI_PREFIX: &str = "app://ui/";
 
-/// Accepts `http`, `https`, `about:blank` and `app://ui/...`. The `app://ui` pages belong to the
-/// system, so only a caller with `allow_app` may load them.
-pub(crate) fn check(url: &str, allow_app: bool) -> Result<(), ApiError> {
+/// Accepts `http`, `https` and `about:blank`. Every other scheme is refused, `app://` included,
+/// for every principal: the sidebar is created only by the core's own startup.
+pub(crate) fn check(url: &str) -> Result<(), ApiError> {
     if url.is_empty() {
         return Err(bad_request("the url is empty"));
     }
@@ -29,16 +29,18 @@ pub(crate) fn check(url: &str, allow_app: bool) -> Result<(), ApiError> {
             Ok(())
         };
     }
-    if url.starts_with(UI_PREFIX) {
-        return if allow_app {
-            Ok(())
-        } else {
-            Err(bad_request("app://ui pages are reserved for the system"))
-        };
-    }
     Err(bad_request(
-        "only http, https, about:blank and app://ui urls are accepted",
+        "only http, https and about:blank urls are accepted",
     ))
+}
+
+/// The URL a content view starts on. A stored URL that fails `check` (for example one the engine
+/// reported as `javascript:` or `file:`) is replaced by `about:blank`; the stored value stays as is.
+pub(crate) fn load_url(node: &Node) -> String {
+    match &node.url {
+        Some(url) if check(url).is_ok() => url.clone(),
+        _ => NEW_TAB_URL.to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -47,14 +49,13 @@ mod tests {
     use yaac_api::ErrorCode;
 
     #[test]
-    fn web_and_blank_urls_are_accepted_for_everyone() {
+    fn web_and_blank_urls_are_accepted() {
         for url in [
             "https://example.com/a?b=c",
             "http://localhost:8080",
             NEW_TAB_URL,
         ] {
-            assert!(check(url, false).is_ok(), "{url}");
-            assert!(check(url, true).is_ok(), "{url}");
+            assert!(check(url).is_ok(), "{url}");
         }
     }
 
@@ -65,23 +66,21 @@ mod tests {
             "https://",
             "ftp://x",
             "javascript:alert(1)",
+            "file:///etc/passwd",
+            "data:text/html,x",
             "https://a b",
             "about:config",
         ] {
-            assert_eq!(
-                check(url, true).unwrap_err().code,
-                ErrorCode::BadRequest,
-                "{url}"
-            );
+            assert_eq!(check(url).unwrap_err().code, ErrorCode::BadRequest, "{url}");
         }
     }
 
     #[test]
-    fn app_ui_urls_are_reserved_for_the_system() {
+    fn app_urls_are_refused_for_everyone() {
+        assert_eq!(check(SIDEBAR_URL).unwrap_err().code, ErrorCode::BadRequest);
         assert_eq!(
-            check(SIDEBAR_URL, false).unwrap_err().code,
+            check("app://ui/api").unwrap_err().code,
             ErrorCode::BadRequest
         );
-        assert!(check(SIDEBAR_URL, true).is_ok());
     }
 }

@@ -20,15 +20,15 @@ pub mod testing;
 #[cfg(all(test, feature = "testing"))]
 mod tests;
 
-use actor::{Actor, Message};
+use actor::{Actor, Inbound, Message};
 use state::Plan;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::thread::JoinHandle;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use yaac_api::{ApiError, ApiResult, ErrorCode, Event, Request, Response};
 use yaac_engine::{EngineEvent, EngineHandle};
 use yaac_model::ViewId;
 
-const REQUEST_QUEUE: usize = 256;
 const EVENT_QUEUE: usize = 256;
 
 /// Who is calling. Built by the ingress after it authenticates the caller; never read from the
@@ -40,6 +40,9 @@ pub enum Principal {
         view: ViewId,
     },
     System,
+    /// A principal with no authority. Exists only to test refusals through the real dispatch path.
+    #[cfg(test)]
+    Restricted,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -50,28 +53,61 @@ pub enum CoreError {
     Stopped,
 }
 
-/// Cheap to clone. All state lives in the actor behind it.
+/// Request side of the core. Cheap to clone. Holds no engine ingress: engine callbacks go through
+/// `EngineEventSender`, so a holder of this handle cannot inject them.
 #[derive(Clone)]
 pub struct CoreHandle {
-    requests: mpsc::Sender<Message>,
-    engine_events: mpsc::UnboundedSender<EngineEvent>,
+    lifecycle: Arc<Lifecycle>,
     events: broadcast::Sender<Event>,
+}
+
+/// Engine ingress. Cloneable. Callbacks are queued in arrival order with the requests, and dropped
+/// once the core has stopped. The engine adapter must buffer its callbacks until it holds this
+/// sender: `spawn` returns it only after the startup engine commands are sent.
+#[derive(Clone)]
+pub struct EngineEventSender {
+    inbox: mpsc::UnboundedSender<Inbound>,
+}
+
+impl EngineEventSender {
+    pub fn send(&self, event: EngineEvent) {
+        let _ = self.inbox.send(Inbound::Engine(event));
+    }
+}
+
+/// Owns the inbox and the threads. When the last `CoreHandle` goes, the last `Arc` drops and the
+/// actor is asked to flush and stop. The threads end on their own; they are not joined.
+struct Lifecycle {
+    inbox: mpsc::UnboundedSender<Inbound>,
+    threads: Mutex<Option<Threads>>,
+}
+
+struct Threads {
+    core: JoinHandle<()>,
+    store: JoinHandle<()>,
+}
+
+impl Drop for Lifecycle {
+    fn drop(&mut self) {
+        let _ = self.inbox.send(Inbound::Shutdown);
+    }
 }
 
 impl CoreHandle {
     /// Authorizes and runs one request. Once the core has stopped, every request answers
-    /// `Internal`.
+    /// `Internal`. The inbox is unbounded: a client's requests are bounded by its own waiting.
     pub async fn request(&self, principal: Principal, request: Request) -> Response {
         let id = request.id;
         let (reply, answer) = oneshot::channel();
+        let message = Message {
+            principal,
+            request,
+            reply,
+        };
         if self
-            .requests
-            .send(Message {
-                principal,
-                request,
-                reply,
-            })
-            .await
+            .lifecycle
+            .inbox
+            .send(Inbound::Request(message))
             .is_err()
         {
             return stopped(id);
@@ -79,14 +115,25 @@ impl CoreHandle {
         answer.await.unwrap_or_else(|_| stopped(id))
     }
 
-    /// Engine callbacks go in here; the actor drops stale ones by navigation generation.
-    pub fn engine_events(&self) -> mpsc::UnboundedSender<EngineEvent> {
-        self.engine_events.clone()
-    }
-
     /// Published after every committed or runtime change, with the new revision.
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.events.subscribe()
+    }
+
+    /// Flushes the coalesced writes, stops the actor, and joins both threads. Blocks until they have
+    /// stopped. Calling it again, or after the core has stopped, does nothing.
+    pub fn shutdown(&self) {
+        let _ = self.lifecycle.inbox.send(Inbound::Shutdown);
+        let threads = self
+            .lifecycle
+            .threads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(Threads { core, store }) = threads {
+            let _ = core.join();
+            let _ = store.join();
+        }
     }
 }
 
@@ -104,16 +151,16 @@ fn stopped(id: u64) -> Response {
 
 /// Loads the workspace from `store` (creating the first profile, Space and window on an empty
 /// store), reconciles it with the engine (every restored tab comes up suspended; the selected tab
-/// is loaded) and starts the actor.
+/// is loaded) and starts the actor. Returns the request handle and the engine ingress.
 ///
-/// Needs no Tokio runtime: the store and the actor each run on their own thread. Startup commits
-/// and engine commands are complete when this returns.
+/// Needs no Tokio runtime: the store and the actor each run on their own thread. The startup engine
+/// commands have been sent when this returns.
 pub fn spawn(
     store: Box<dyn Store>,
     engine: Arc<dyn EngineHandle>,
-) -> Result<CoreHandle, CoreError> {
+) -> Result<(CoreHandle, EngineEventSender), CoreError> {
     let (jobs, job_queue) = std::sync::mpsc::channel();
-    std::thread::Builder::new()
+    let store_thread = std::thread::Builder::new()
         .name("yaac-store".into())
         .spawn(move || actor::run_store(store, job_queue))
         .expect("the store thread can start");
@@ -132,23 +179,29 @@ pub fn spawn(
         engine.send(command);
     }
 
-    let (requests, request_queue) = mpsc::channel(REQUEST_QUEUE);
-    let (engine_events, engine_queue) = mpsc::unbounded_channel();
+    let (inbox, inbox_queue) = mpsc::unbounded_channel();
     let (events, _) = broadcast::channel(EVENT_QUEUE);
     let actor = Actor::new(state, jobs, engine, events.clone());
-    std::thread::Builder::new()
+    let core_thread = std::thread::Builder::new()
         .name("yaac-core".into())
         .spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
                 .build()
                 .expect("the core runtime can start");
-            runtime.block_on(actor.run(request_queue, engine_queue));
+            runtime.block_on(actor.run(inbox_queue));
         })
         .expect("the core thread can start");
 
-    Ok(CoreHandle {
-        requests,
-        engine_events,
-        events,
-    })
+    let lifecycle = Arc::new(Lifecycle {
+        inbox: inbox.clone(),
+        threads: Mutex::new(Some(Threads {
+            core: core_thread,
+            store: store_thread,
+        })),
+    });
+    Ok((
+        CoreHandle { lifecycle, events },
+        EngineEventSender { inbox },
+    ))
 }

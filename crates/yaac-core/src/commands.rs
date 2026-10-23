@@ -1,13 +1,12 @@
 //! Command plans. Each command is validated against the current state and becomes a `Plan`. The
 //! actor commits the plan before any engine command goes out.
 
-use crate::auth::Kind;
 use crate::error::{bad_request, conflict, position as position_error};
 use crate::state::{Plan, State, Tx};
 use crate::urls::{self, NEW_TAB_URL};
 use yaac_api::{ApiError, Command, Placement, ResponseBody};
 use yaac_engine::EngineCommand;
-use yaac_model::{ContainerKind, Node, NodeId, NodeKind, Position, SpaceId, ViewId};
+use yaac_model::{ContainerId, ContainerKind, Node, NodeId, NodeKind, Position, SpaceId, ViewId};
 
 /// What a command answers with, once its revision is known.
 pub(crate) enum Answer {
@@ -26,24 +25,20 @@ impl Answer {
     }
 }
 
-pub(crate) fn plan(
-    state: &State,
-    kind: Kind,
-    command: Command,
-) -> Result<(Plan, Answer), ApiError> {
+pub(crate) fn plan(state: &State, command: Command) -> Result<(Plan, Answer), ApiError> {
     let mut tx = Tx::new(state.clone());
-    let answer = apply(&mut tx, kind, command)?;
+    let answer = apply(&mut tx, command)?;
     Ok((tx.finish(), answer))
 }
 
-fn apply(tx: &mut Tx, kind: Kind, command: Command) -> Result<Answer, ApiError> {
+fn apply(tx: &mut Tx, command: Command) -> Result<Answer, ApiError> {
     Ok(match command {
         Command::OpenTab {
             placement,
             url,
             activate,
         } => {
-            urls::check(&url, kind.allows_app_urls())?;
+            urls::check(&url)?;
             let node = tx.insert_tab(&placement, url)?;
             if activate {
                 tx.select(node)?;
@@ -51,11 +46,15 @@ fn apply(tx: &mut Tx, kind: Kind, command: Command) -> Result<Answer, ApiError> 
             Answer::Opened(node)
         }
         Command::CloseTab { node } => {
-            close_tab(tx, node)?;
+            close(tx, node)?;
             Answer::Ack
         }
         Command::SelectTab { node } => {
             tx.select(node)?;
+            Answer::Ack
+        }
+        Command::SelectSpace { space } => {
+            select_space(tx, space)?;
             Answer::Ack
         }
         Command::MoveNode { node, to } => {
@@ -64,8 +63,7 @@ fn apply(tx: &mut Tx, kind: Kind, command: Command) -> Result<Answer, ApiError> 
         }
         Command::CreateFolder { placement, title } => {
             let title = non_empty(&title, "folder title")?;
-            tx.insert_node(&placement, NodeKind::Folder, title, None)?;
-            Answer::Ack
+            Answer::Opened(tx.insert_node(&placement, NodeKind::Folder, title, None)?)
         }
         Command::RenameNode { node, title } => {
             rename(tx, node, &title)?;
@@ -78,7 +76,7 @@ fn apply(tx: &mut Tx, kind: Kind, command: Command) -> Result<Answer, ApiError> 
             Answer::SpaceCreated(tx.add_space(profile, name, position))
         }
         Command::Navigate { node, url } => {
-            urls::check(&url, kind.allows_app_urls())?;
+            urls::check(&url)?;
             navigate(tx, node, url)?;
             Answer::Ack
         }
@@ -97,38 +95,82 @@ fn apply(tx: &mut Tx, kind: Kind, command: Command) -> Result<Answer, ApiError> 
     })
 }
 
-/// Closes a node and its subtree. If the selection was inside it, the next tab sibling is
-/// selected, else the previous one, else a new about:blank tab opens in the active Space.
-fn close_tab(tx: &mut Tx, node: NodeId) -> Result<(), ApiError> {
+/// Closes a tab, or deletes an empty folder or split. A folder with children is refused.
+///
+/// Closing the selected tab selects a replacement: the next tab sibling, else the previous one, else
+/// another open tab of the Space. A new about:blank tab opens only when the Space has no other tab.
+fn close(tx: &mut Tx, node: NodeId) -> Result<(), ApiError> {
     let closing = tx.node(node)?.clone();
+    if closing.kind != NodeKind::Tab {
+        if tx.has_children(node)? {
+            return Err(conflict("folder not empty"));
+        }
+        tx.remove_subtree(node)?;
+        return Ok(());
+    }
     let successor = tx.neighbour_tab(&closing);
     let session = tx.session()?;
     let removed = tx.remove_subtree(node)?;
     let selection_removed = session
         .selected_node_id
         .is_some_and(|selected| removed.iter().any(|gone| gone.id == selected));
-    if !selection_removed {
-        return Ok(());
+    if selection_removed {
+        choose_replacement(tx, session.space_id, successor, Some(closing.container_id))?;
     }
-    match successor {
-        Some(next) => tx.select(next),
-        None => {
-            let placement = Placement {
-                space: session.space_id,
-                container: ContainerKind::Today,
-                parent: None,
-                before: None,
-            };
-            let tab = tx.insert_tab(&placement, NEW_TAB_URL.to_owned())?;
-            tx.select(tab)
-        }
+    Ok(())
+}
+
+/// Selects `successor` when there is one, else the first other open tab of `space` (preferring
+/// `prefer`), else a new about:blank tab in the Space's today container.
+fn choose_replacement(
+    tx: &mut Tx,
+    space: SpaceId,
+    successor: Option<NodeId>,
+    prefer: Option<ContainerId>,
+) -> Result<(), ApiError> {
+    if let Some(next) = successor {
+        return tx.select(next);
     }
+    if let Some(other) = tx.tabs_in_space(space, prefer).first().copied() {
+        return tx.select(other);
+    }
+    let placement = Placement {
+        space,
+        container: ContainerKind::Today,
+        parent: None,
+        before: None,
+    };
+    let tab = tx.insert_tab(&placement, NEW_TAB_URL.to_owned())?;
+    tx.select(tab)
+}
+
+/// Makes a Space active. Its last selected tab is selected again; without one, its first today tab;
+/// without that, a new about:blank tab.
+fn select_space(tx: &mut Tx, space: SpaceId) -> Result<(), ApiError> {
+    tx.space(space)?;
+    if let Some(node) = tx.last_selected_tab(space) {
+        return tx.select(node);
+    }
+    let today = tx.container_id(space, ContainerKind::Today)?;
+    if let Some(first) = tx.tabs_of_container(today).first().copied() {
+        return tx.select(first);
+    }
+    let placement = Placement {
+        space,
+        container: ContainerKind::Today,
+        parent: None,
+        before: None,
+    };
+    let tab = tx.insert_tab(&placement, NEW_TAB_URL.to_owned())?;
+    tx.select(tab)
 }
 
 fn move_node(tx: &mut Tx, node: NodeId, to: &Placement) -> Result<(), ApiError> {
-    let source_profile = tx.container(tx.node(node)?.container_id)?.profile_id;
+    let moving: Node = tx.node(node)?.clone();
+    let source_profile = tx.container(moving.container_id)?.profile_id;
     let target = tx.container_id(to.space, to.container)?;
-    if tx.container(target)?.profile_id != source_profile {
+    let target_container = tx.container(target)?.clone();
+    if target_container.profile_id != source_profile {
         return Err(conflict("a tab cannot move to another profile in M1"));
     }
     if to.before == Some(node) {
@@ -137,13 +179,36 @@ fn move_node(tx: &mut Tx, node: NodeId, to: &Placement) -> Result<(), ApiError> 
     if tx.is_within(to.parent, node)? {
         return Err(conflict("a node cannot be moved into its own subtree"));
     }
+
+    // A move that carries the selected tab elsewhere switches the active Space. A move into
+    // the archive suspends the selected tab, so another tab is selected in its place.
+    let selected = tx.selected();
+    let moves_selection = match selected {
+        Some(selected) => tx.is_within(Some(selected), node)?,
+        None => false,
+    };
+    let leaves_space = moves_selection && target_container.kind == ContainerKind::Archive;
+    let successor = if leaves_space {
+        tx.neighbour_tab(&moving)
+    } else {
+        None
+    };
+    let active_space = tx.session()?.space_id;
+    if leaves_space && let Some(view) = selected.and_then(|selected| tx.detach_view(selected)) {
+        tx.emit(EngineCommand::Close { view });
+    }
+
     let position = tx.slot(target, to.parent, to.before)?;
     tx.move_node(node, target, to.parent, position)?;
-    let target_space = tx.container(target)?.space_id;
-    if let Some(space) = target_space.filter(|_| tx.selected() == Some(node)) {
-        let mut session = tx.session()?;
-        session.space_id = space;
-        tx.put_session(session);
+
+    if moves_selection {
+        if leaves_space {
+            choose_replacement(tx, active_space, successor, Some(moving.container_id))?;
+        } else if let Some(space) = target_container.space_id {
+            let mut session = tx.session()?;
+            session.space_id = space;
+            tx.put_session(session);
+        }
     }
     Ok(())
 }
@@ -202,7 +267,6 @@ fn non_empty(value: &str, what: &str) -> Result<String, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::url_or_blank;
 
     #[test]
     fn blank_titles_are_rejected() {
@@ -211,27 +275,5 @@ mod tests {
             yaac_api::ErrorCode::BadRequest
         );
         assert_eq!(non_empty(" a ", "title").unwrap(), "a");
-    }
-
-    #[test]
-    #[ignore = "needs m1/model"]
-    fn a_suspended_url_defaults_to_blank() {
-        let node = Node {
-            id: NodeId::new(),
-            container_id: yaac_model::ContainerId::new(),
-            parent_id: None,
-            position: Position::first(),
-            kind: NodeKind::Tab,
-            title: String::new(),
-            url: None,
-            state: yaac_model::NodeState::Suspended,
-            is_unread: false,
-            created_at: 0,
-            last_active_at: 0,
-            updated_at: 0,
-            origin_device: None,
-            rev: 0,
-        };
-        assert_eq!(url_or_blank(&node), NEW_TAB_URL);
     }
 }

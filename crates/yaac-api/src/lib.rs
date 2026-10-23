@@ -124,6 +124,7 @@ pub enum ResponseBody {
         #[cfg_attr(feature = "ts", ts(type = "number"))]
         rev: u64,
     },
+    /// A node was created: the answer to `OpenTab` and `CreateFolder`.
     Opened {
         node: NodeId,
         #[cfg_attr(feature = "ts", ts(type = "number"))]

@@ -1,6 +1,7 @@
 //! Engine events. Each one is checked against the current state and becomes a plan, is ignored, or
 //! (for the core's own window closing) stops the actor.
 
+use crate::error::internal;
 use crate::navigation::{self, NavigationStep, TitleStep};
 use crate::state::{Plan, State, Tx, now_millis};
 use crate::urls;
@@ -34,6 +35,13 @@ pub(crate) fn on_engine_event(state: &State, event: EngineEvent) -> Step {
     }
 }
 
+/// A URL or title change. It applies in memory at once; the actor persists it on its next flush.
+fn coalesced(tx: Tx) -> Step {
+    let mut plan = tx.finish();
+    plan.coalesce = true;
+    Step::Plan(Box::new(plan))
+}
+
 fn navigated(state: &State, view: ViewId, nav_gen: u64, url: String) -> Step {
     let Some(&node_id) = state.view_nodes.get(&view) else {
         return Step::Ignore;
@@ -60,7 +68,7 @@ fn navigated(state: &State, view: ViewId, nav_gen: u64, url: String) -> Step {
             return Step::Ignore;
         }
     }
-    Step::Plan(Box::new(tx.finish()))
+    coalesced(tx)
 }
 
 fn title_changed(state: &State, view: ViewId, nav_gen: u64, title: &str) -> Step {
@@ -87,11 +95,15 @@ fn title_changed(state: &State, view: ViewId, nav_gen: u64, title: &str) -> Step
             }
         }
     }
-    Step::Plan(Box::new(tx.finish()))
+    coalesced(tx)
 }
 
-/// A view closed or crashed on its own. The node stays; it is no longer live.
+/// A view closed or crashed on its own. A content view's node stays, no longer live. The sidebar
+/// is recreated under a new view id, and the old one stops being a UI principal.
 fn detached(state: &State, view: ViewId) -> Step {
+    if state.sidebar_views.contains(&view) {
+        return sidebar_lost(state, view);
+    }
     let Some(&node) = state.view_nodes.get(&view) else {
         return Step::Ignore;
     };
@@ -100,10 +112,20 @@ fn detached(state: &State, view: ViewId) -> Step {
     Step::Plan(Box::new(tx.finish()))
 }
 
+fn sidebar_lost(state: &State, view: ViewId) -> Step {
+    let mut tx = Tx::new(state.clone());
+    tx.forget_sidebar(view);
+    let Ok(profile) = tx.default_profile() else {
+        return Step::Ignore;
+    };
+    tx.attach_sidebar(profile);
+    Step::Plan(Box::new(tx.finish()))
+}
+
 /// A user-gesture popup opens a tab in the opener's Space. Other popups are dropped.
 fn popup(state: &State, opener: ViewId, url: String, user_gesture: bool) -> Step {
-    // Page content never names an app:// URL, whatever the opener.
-    if !user_gesture || urls::check(&url, false).is_err() {
+    // Page content never names an app:// URL, and `check` refuses it for everyone.
+    if !user_gesture || urls::check(&url).is_err() {
         return Step::Ignore;
     }
     let Some(&opener_node) = state.view_nodes.get(&opener) else {
@@ -128,10 +150,23 @@ fn popup(state: &State, opener: ViewId, url: String, user_gesture: bool) -> Step
     Step::Plan(Box::new(tx.finish()))
 }
 
+/// The Space a popup opens in. A tab in a Space uses that Space. A favorites tab uses the window's
+/// active Space when it belongs to the same profile, else the profile's first Space by position.
 fn popup_space(tx: &Tx, opener: NodeId) -> Result<SpaceId, ApiError> {
     let container = tx.container(tx.node(opener)?.container_id)?;
-    match container.space_id {
-        Some(space) => Ok(space),
-        None => Ok(tx.session()?.space_id),
+    if let Some(space) = container.space_id {
+        return Ok(space);
     }
+    let profile = container.profile_id;
+    let active = tx.session()?.space_id;
+    if tx
+        .space(active)
+        .is_ok_and(|space| space.profile_id == profile)
+    {
+        return Ok(active);
+    }
+    tx.spaces_by_position()
+        .into_iter()
+        .find(|id| tx.space(*id).is_ok_and(|space| space.profile_id == profile))
+        .ok_or_else(|| internal("the profile has no space"))
 }

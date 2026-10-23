@@ -12,16 +12,9 @@ pub(crate) enum Kind {
     /// The main frame of a registered UI browser.
     Ui,
     System,
-    /// A principal with no authority. Exists only to test refusals.
+    /// A principal with no authority. Exists only to test refusals through the handle.
     #[cfg(test)]
     Restricted,
-}
-
-impl Kind {
-    /// Only the system may load `app://ui` pages.
-    pub(crate) fn allows_app_urls(self) -> bool {
-        matches!(self, Kind::System)
-    }
 }
 
 /// Checks the protocol version, then the principal's authority for the request body.
@@ -40,6 +33,8 @@ pub(crate) fn admit(
         Principal::Ui { view } if state.sidebar_views.contains(view) => Kind::Ui,
         Principal::Ui { .. } => return Err(forbidden("the view is not a registered UI view")),
         Principal::System => Kind::System,
+        #[cfg(test)]
+        Principal::Restricted => Kind::Restricted,
     };
     if permits(kind, &request.body) {
         Ok(kind)
@@ -57,6 +52,7 @@ pub(crate) fn permits(kind: Kind, body: &Body) -> bool {
             Command::OpenTab { .. }
             | Command::CloseTab { .. }
             | Command::SelectTab { .. }
+            | Command::SelectSpace { .. }
             | Command::MoveNode { .. }
             | Command::CreateFolder { .. }
             | Command::RenameNode { .. }
@@ -74,12 +70,12 @@ pub(crate) fn permits(kind: Kind, body: &Body) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yaac_model::{NodeId, ViewId};
+    use yaac_model::{NodeId, SpaceId, ViewId};
 
     fn every_command() -> Vec<Command> {
         let node = NodeId::new();
         let placement = yaac_api::Placement {
-            space: yaac_model::SpaceId::new(),
+            space: SpaceId::new(),
             container: yaac_model::ContainerKind::Today,
             parent: None,
             before: None,
@@ -92,6 +88,9 @@ mod tests {
             },
             Command::CloseTab { node },
             Command::SelectTab { node },
+            Command::SelectSpace {
+                space: SpaceId::new(),
+            },
             Command::MoveNode {
                 node,
                 to: placement.clone(),
@@ -125,14 +124,6 @@ mod tests {
             }
             assert!(permits(kind, &Body::Query(Query::Snapshot)));
             assert!(permits(kind, &Body::Query(Query::Since { rev: 0 })));
-        }
-    }
-
-    #[test]
-    fn a_restricted_principal_is_refused_everything() {
-        assert!(!permits(Kind::Restricted, &Body::Query(Query::Snapshot)));
-        for command in every_command() {
-            assert!(!permits(Kind::Restricted, &Body::Command(command)));
         }
     }
 
