@@ -37,6 +37,10 @@ Not done or failing:
 - Release bundle (`PROFILE=release`): not built and run here.
 - Run without `ui/dist`: not run in this round.
 
+## Run everything
+
+`crates/yaac-app/scripts/bundle-macos.sh` then `crates/yaac-app/scripts/run-harnesses.sh` runs the four harnesses, the harness self-test (a forced failure after the window closes must exit non-zero) and the restart persistence check. It exits non-zero on any failure.
+
 ## Commands
 
 ```sh

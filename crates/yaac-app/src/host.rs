@@ -153,6 +153,9 @@ pub fn start(
     }));
     #[cfg(yaac_dev)]
     if let Some(stages) = mode.stages() {
+        // Failed until the harness says otherwise, from the first instant (not when its task is
+        // first polled).
+        engine.set_exit_code(1);
         let task = runtime.spawn(harness::run(stages, engine, events, calls));
         if let Ok(mut slot) = HARNESS_TASK.lock() {
             *slot = Some(task);
@@ -241,14 +244,20 @@ pub fn shutdown(engine: Arc<CefEngine>, core_cell: Arc<OnceLock<CoreHandle>>, ru
     engine.flush_events();
     // A harness sets its verdict (the exit code) last. The exit code is read after this returns.
     #[cfg(yaac_dev)]
-    if let Some(task) = HARNESS_TASK.lock().ok().and_then(|mut slot| slot.take()) {
-        let finished = runtime.block_on(async {
-            tokio::time::timeout(Duration::from_secs(10), task)
-                .await
-                .is_ok()
-        });
-        if !finished {
-            println!("HARNESS result=fail reason=the harness did not finish during shutdown");
+    if let Some(mut task) = HARNESS_TASK.lock().ok().and_then(|mut slot| slot.take()) {
+        let outcome = runtime
+            .block_on(async { tokio::time::timeout(Duration::from_secs(10), &mut task).await });
+        match outcome {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                println!("HARNESS result=fail reason=the harness task failed: {error}");
+                engine.set_exit_code(1);
+            }
+            Err(_) => {
+                task.abort();
+                println!("HARNESS result=fail reason=the harness did not finish during shutdown");
+                engine.set_exit_code(1);
+            }
         }
     }
     if core_cell.get().is_some() {

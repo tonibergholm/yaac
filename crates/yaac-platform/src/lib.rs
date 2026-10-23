@@ -47,7 +47,7 @@ impl AppPaths {
 /// - `fstat` on that descriptor: the owner must be the current user;
 /// - `fchmod` on that descriptor: the mode becomes exactly 0700 (a stricter mode is changed too).
 ///
-/// Path components below `$HOME` or `$TMPDIR` must not be symlinks (`O_NOFOLLOW` only covers the
+/// Path components below `$HOME`, `$TMPDIR` or the system temp directory must not be symlinks (`O_NOFOLLOW` only covers the
 /// last component). The parent must be owned by the current user or by root. A missing directory is
 /// created with mode 0700; its missing parents are created with the default mode.
 pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
