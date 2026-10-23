@@ -10,7 +10,7 @@ Raw captures (small text files): `docs/research/06-aside-observed/runtime-probes
 
 ## Summary
 
-- Aside is installed at `/Applications/Aside.app`, version 1.0.1022.1. The app contains a Node-based local daemon, `aside-daemon` (bundle id `at.studio.AsideBrowser.daemon`, version 1.26.1023). It listens on TCP `127.0.0.1:21420`. VERIFIED.
+- Aside is installed at `/Applications/Aside.app`, version 1.0.1022.1. The app contains a local daemon, `aside-daemon` (bundle id `at.studio.AsideBrowser.daemon`, version 1.26.1023). It listens on TCP `127.0.0.1:21420`. VERIFIED. "Node-based" is INFERRED from the strings (section 1).
 - The daemon rejects requests with a foreign `Origin` or `Host` header with HTTP 403. A plain `GET /` with no headers returns HTTP 200 and a 231-byte JSON body. No credential was sent. VERIFIED. The body was not read.
 - The only observed TCP client of the daemon is the browser's network-service helper process. VERIFIED. The CLI and `aside mcp` were not observed (they are not installed).
 - The CLI is not on PATH and is not at any documented location. VERIFIED. The daemon binary carries the install-target strings `~/.local/bin` and `~/.aside/bin`. VERIFIED as strings; INFERRED as the install targets.
@@ -31,7 +31,7 @@ VERIFIED unless marked otherwise.
 - App bundle: `/Applications/Aside.app`. Bundle id `at.studio.AsideBrowser`. `CFBundleShortVersionString` 1.0.1022.1, `CFBundleVersion` 1022.1. Minimum macOS 13.0. Arch arm64 only.
 - Framework: `Contents/Frameworks/Aside Framework.framework`, version 1.0.1022.1 (the same version as the app). It contains helper apps (GPU, Renderer, Alerts, Aperitif variants, Updater) and `Libraries/` with `AsideAgentManager`, `AsideDaemon`, `AsidePasswordManager`, and `libaperitif.dylib`. The names are from the bundle layout.
 - Daemon: `Libraries/AsideDaemon/mac-arm64/Aside Daemon.app`, bundle id `at.studio.AsideBrowser.daemon`, version 1.26.1023. This version differs from the app version. The daemon is a separate component with its own version.
-- Chromium: the framework binary contains the user-agent constant `Chrome/154.0.8037.100`. INFERRED: the Chromium major version is 154. The probe that would confirm it on a live page was not run (no tab). note 05 pins CEF 154.5.0, which matches.
+- Chromium: the framework binary contains the user-agent constant `Chrome/154.0.8037.100`. INFERRED: the Chromium major version is 154. The framework `Info.plist` has only bundle version keys (`CFBundleVersion`, `CFBundleShortVersionString`) and no Chromium key (VERIFIED). A live check on a page was not run (no tab). note 05 pins CEF 154.5.0, which matches.
 - Code signing: Developer ID Application, team `8CPD4K4TBB`, hardened runtime flags `kill, restrict, library-validation, runtime`. Notarization ticket stapled. VERIFIED (`codesign -dv --verbose=2`).
 - Entitlements, main app: web-browser public-key credentials, audio input, bluetooth, camera, print, USB, location, photos library, and keychain groups for cryptography, device trust, secure payment confirmation, unexportable keys, and WebAuthn. VERIFIED.
 - Entitlements, daemon: `allow-jit`, `allow-unsigned-executable-memory`, `disable-library-validation`, and a keychain group for cryptography. VERIFIED. `disable-library-validation` on a process that listens on a TCP port is a wider attack surface than needed. This is a concern for us, not a finding about Aside's security.
@@ -45,7 +45,7 @@ VERIFIED unless marked otherwise.
 Not observed. The binary is absent.
 
 - PATH: `which aside` returns nothing. The directories `~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, `~/.aside/bin`, `~/.aside/cli` do not contain an `aside` file. VERIFIED.
-- Install-target strings in the daemon: `ASIDE_CLI_INSTALL_DIR`, `ASIDE_CLI_CANDIDATE_PATHS`, `ASIDE_CLI_EXPECTED_PUBLISHER`, and the path strings `~/.local/bin` and `~/.aside/bin`. VERIFIED as strings. INFERRED: the installer or the app's CLI-setup step puts the CLI in one of these directories and adds it to PATH. How PATH is set up was not checked; the shell rc files were not edited, and no PATH line for Aside was found in `~/.zshrc`, `~/.zprofile`, or `~/.zshenv` (grep for "aside", VERIFIED).
+- Install-target strings in the daemon: `ASIDE_CLI_INSTALL_DIR`, `ASIDE_CLI_CANDIDATE_PATHS`, `ASIDE_CLI_EXPECTED_PUBLISHER`, and the path strings `~/.local/bin` and `~/.aside/bin`. VERIFIED as strings. INFERRED: the installer or the app's CLI-setup step puts the CLI in one of these directories and adds it to PATH. How PATH is set up was not checked; the shell rc files were not edited, and no line mentioning "aside" (case-insensitive, unfiltered, so commented lines count) was found in `~/.zshrc`, `~/.zprofile`, `/etc/zshrc`, `/etc/zprofile`, or `/etc/paths.d/*` (VERIFIED, 0 matches each; `~/.zshenv`, `~/.bash_profile`, and `~/.profile` were also checked in an earlier run with a filtered grep). The PATH entry is therefore not in a shell startup file this run could see.
 - Command tree: DOC only (note 05, section 1.1). Not re-verified this run.
   - `aside "<prompt>"`: starts an agent task (paid agent path; not used here).
   - `aside --session <id> "<prompt>"`: continues a session (agent path; not used).
@@ -68,8 +68,8 @@ Not run. The `aside mcp` process does not exist without the CLI.
 Static cross-check only (VERIFIED as strings; the role was not determined):
 
 - Protocol method names found in the daemon strings: `initialize`, `tools/list`, `tools/call`, `notifications/initialized`, `resources/list`. `prompts/list` was not found.
-- MCP-related identifiers: `McpManager`, `McpClient`, `McpStdioConnectionError`, `McpHttpError`, `McpOAuthProvider`, `McpOAuthAuthorizationRequiredError`, `mcpServers`, `mcp__` prefix, `mcp-credential-cleanup` (file name).
-- INFERRED: the daemon contains an MCP client that connects to external MCP servers (the `mcpServers` config key). The strings do not show whether the daemon also contains an MCP server that `aside mcp` would expose. Both roles could be in the same process. This is the open question for the MCP section.
+- Interface-level MCP names kept: the config key `mcpServers`, the `mcp__` tool-name prefix, and the file name `mcp-credential-cleanup` (in `~/.aside/`, listed by name only). Internal JavaScript class and function names were seen in the binary and are deliberately not recorded here.
+- INFERRED: the daemon contains MCP client code that connects to external MCP servers (from the `mcpServers` config key and the `mcp__` prefix). The strings do not show whether the daemon also contains an MCP server that `aside mcp` would expose. Both roles could be in the same process. This is the open question for the MCP section.
 - No `serverInfo` or `protocolVersion` capture was taken. The tool list is UNKNOWN.
 
 Tool table: UNKNOWN (no `tools/list`). note 05's secondary-source claim of a single `repl` tool is not confirmed or refuted.
@@ -98,12 +98,15 @@ CLI `aside` and `aside mcp`: not installed. Path to the daemon: UNKNOWN.
 Observations behind the diagram:
 
 - The daemon and the main process both listen on loopback TCP. No Unix socket was found for the daemon. VERIFIED (`lsof -U` for pid 13450 shows only an fd to a peer address, not a listening socket path).
+- Daemon fd 20 is a Unix socket connected to an unnamed peer (address `0xfd1d444e5e8c5470`). The other end was not found in `lsof -nP -U` (searched by both addresses). VERIFIED that the fd exists; the peer is UNKNOWN. It is not known to be a CLI channel, and the main process (13436) does not show the matching address in its fd list (VERIFIED for 13436's list, which holds only the SingletonSocket at fd 5).
+- Browser singleton socket: `SingletonSocket` at `$TMPDIR/at.studio.AsideBrowser.WsfJyH/SingletonSocket`, mode `srwxr-xr-x` (0755), inside a parent directory with mode `drwx------` (0700), owner tonibergholm. VERIFIED. The 0700 parent is what limits access to the user. A second directory `at.studio.AsideBrowser.UVHCZD` (also 0700) exists, probably left over from an earlier launch; not investigated.
+- Remote debugging: the daemon's binary has the env names `ASIDE_BROWSER_CDP_HOST` and `ASIDE_BROWSER_CDP_PORT` (VERIFIED as strings). The main process argv has no `--remote-debugging-port` (`ps` shows only the executable path, VERIFIED), and no `DevToolsActivePort` file exists directly under `~/Library/Application Support/Aside/` (name check, VERIFIED). INFERRED: the CDP host and port settings are used by the daemon or by an internal path, not by an externally visible DevTools endpoint. The identity of the main process's loopback listener on 45103 is still UNKNOWN. This is a static/runtime divergence to resolve later: the env names say CDP is configurable, and the running process shows no CDP switch.
 - Seven accepted daemon connections, all from pid 13445. VERIFIED (`lsof -iTCP:<port>` for each peer). The daemon's peer is the browser network helper, not a CLI. The purpose of this link is INFERRED from the process role.
 - Host and Origin checks: a request with `Host: evil.test` and a request with `Origin: https://example.com` each returned 403. VERIFIED (headers only, via curl). These two tests do not test a real browser's CORS behavior. A browser request was not sent.
 - Authentication: a plain `GET /` with no `Origin` and no `Authorization` returned 200. VERIFIED. The 231-byte body was not read. Whether it is an error envelope or a status document is UNKNOWN. An unauthenticated 200 on loopback means any local process can reach the port. VERIFIED for the reachability; INFERRED that other routes may need a token.
 - Token: no token file was found by name. `~/.aside/u/0/credentials.json` (mode 600, 2 bytes) exists by name, and `~/.aside/logs/daemon-2026-10-23.log` (mode 600). The content of neither was read. Whether a token is in `credentials.json` is UNKNOWN; the file is only 2 bytes. Not read.
-- Permission modes on the directories: `~/.aside/` is 755 and its `u/` and `logs/` are 755 or 700. The files that matter (`accounts.json`, `credentials.json`, `settings.json`, `memory-catalog.json`, `daemon-*.log`) are 600. VERIFIED by `ls -l`.
-- Unix socket permissions for the daemon: not applicable (no daemon Unix socket was found). The browser's singleton socket exists; its mode was not checked in this run.
+- Permission modes of entries under `~/.aside/`: `u/` and `logs/` are 755; `memory-runtimes/`, `models/`, and `runtime-computer-use/` are 700. The files `accounts.json`, `credentials.json`, `settings.json`, `memory-catalog.json`, and `logs/daemon-*.log` are 600. VERIFIED by `ls -l` on the entries. The mode of `~/.aside/` itself was not checked.
+- Unix socket permissions for the daemon: not applicable (no daemon Unix socket was found). The browser singleton socket is 0755 inside a 0700 directory (see above).
 - XPC or Mach service: not checked (no `launchctl` or `lsof` for Mach ports was run). UNKNOWN.
 - Native messaging hosts: not checked. The directory `NativeMessagingHosts` was not listed. UNKNOWN.
 
@@ -148,8 +151,8 @@ Static cross-check (VERIFIED as names only): the sdef lists AppleScript commands
 
 Verified or inferred from this run:
 
-- The app ships a separate local daemon with its own version, its own bundle id, and a loopback TCP listener. The CLI and MCP surfaces both depend on it. That is one enforcement point, which is the design we also want.
-- The daemon checks `Host` and `Origin`. That blocks browser-originated requests from foreign origins, which matches the note 05 concern about DNS rebinding and web-page access to the port.
+- The app ships a separate local daemon with its own version, its own bundle id, and a loopback TCP listener (VERIFIED). INFERRED from the DOC wording "local service": the CLI and MCP surfaces depend on this daemon. No CLI was observed connecting to it, so this link is unverified. If it holds, the daemon would be a single enforcement point, which is the design we also want.
+- The daemon rejected curl requests with spoofed `Host` and `Origin` headers (VERIFIED, 403). Real browser CORS and DNS-rebinding requests were not sent, so the protection against web pages is INFERRED from the header checks alone.
 - The daemon answers an unauthenticated `GET /` on loopback. Any local process can reach the port. This supports note 05 R1: keep the control surface off TCP and use a Unix socket with `0600` and a peer-uid check.
 - The daemon has `disable-library-validation` and JIT entitlements. For us, the lesson is to keep the control daemon's entitlements minimal.
 - The CLI is not on PATH by default. For us, the install step has to be explicit and tested.
@@ -188,12 +191,12 @@ Still unknown:
 
 ## 10. Verdict and recommendations for yaac
 
-Verdict: Aside's agent surface is a Node daemon on loopback TCP, with a CLI and MCP in front of it. The daemon's Host and Origin checks are good. Its unauthenticated loopback reachability and its wide entitlements are what we should not copy. The rest of the agent behavior (tools, permissions, snapshot cost) is not established by this run.
+Verdict: VERIFIED, the app runs a Node-based daemon on loopback TCP that answers unauthenticated GET requests and rejects spoofed Host and Origin headers. INFERRED from DOC, not observed: the CLI and MCP surfaces sit in front of that daemon. The Host and Origin checks are a good sign, but only spoofed-header requests were tested. Its unauthenticated loopback reachability and its wide entitlements are what we should not copy. The rest of the agent behavior (tools, permissions, snapshot cost) is not established by this run.
 
 Copy conceptually:
 
-- One local daemon as the only control point, with the CLI and the MCP server as thin clients. Matches note 05, section 5.1 (Option A).
-- Host and Origin checks on any local HTTP endpoint, as a second layer. Use them only if an HTTP endpoint exists.
+- One local daemon as the only control point, with the CLI and the MCP server as thin clients. Matches note 05, section 5.1 (Option A). INFERRED for Aside: this is the layout the DOC implies, not something observed.
+- Host and Origin checks on any local HTTP endpoint, as a second layer. Use them only if an HTTP endpoint exists. Aside's checks passed the spoofed-header test only.
 - Restrictive file modes (600) on state files and logs.
 
 Avoid:

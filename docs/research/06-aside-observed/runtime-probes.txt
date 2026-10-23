@@ -36,12 +36,22 @@ https://github.com/tonibergholm/yaac                  245228 bytes
                           password-manager (755), runtime (755), runtime-computer-use (700), u (755)
                           files: accounts.json (600), mcp-credential-cleanup.json (600), memory-catalog.json (600)
 ~/.aside/logs/            daemon-2026-10-23.log (600, 17662 bytes)
-~/.aside/runtime/         bin (755, 448 bytes of entries: node, npm, npx, pdf*, pip*, python*, rg), native, node, python, tmp,
+~/.aside/runtime/         bin (755; entries: node, npm, npx, pdf*, pip*, python*, rg), native, node, python, tmp,
                           env.sh (644), manifest.txt (644), version.txt (644), .npmrc, prepare-python.py, openssl.cnf
 ~/.aside/u/0/            AGENTS.md, SOUL.md, agents/, cache/, credentials.json (600), memory/, sessions/,
                           settings.json (600), skills/, state.db (+ -shm, -wal), .project-v6-external-storage-complete
 ~/.aside/bin, ~/.aside/native, ~/.aside/cli: do not exist.
 ~/.local/bin/aside, /usr/local/bin/aside, /opt/homebrew/bin/aside: do not exist. `which aside` prints nothing.
+
+## Socket and profile checks (names and modes only)
+$TMPDIR/at.studio.AsideBrowser.WsfJyH/   drwx------ (0700), contains SingletonSocket srwxr-xr-x (0755)  <- live, fd 5 of pid 13436
+$TMPDIR/at.studio.AsideBrowser.UVHCZD/   drwx------ (0700), contains SingletonSocket srwxr-xr-x (0755)  <- not investigated
+Daemon fd 20 (pid 13450): unix socket to unnamed peer 0xfd1d444e5e8c5470; peer not found in lsof -U.
+~/Library/Application Support/Aside/: no DevToolsActivePort at top level (find -maxdepth 1). Profile directory "Default" exists (not read).
+ps for 13436 shows the executable path only, with no --remote-debugging-port and no --user-data-dir argument.
+Shell startup files checked for "aside" (case-insensitive, unfiltered, 0 matches): ~/.zshrc, ~/.zprofile, /etc/zshrc,
+/etc/zprofile, /etc/paths.d/*.
+Chromium keys in framework Info.plist: none (only CFBundleVersion and CFBundleShortVersionString).
 
 ## Installed CLI
 Not present. Not installed in this run (the install script was not run, by design).

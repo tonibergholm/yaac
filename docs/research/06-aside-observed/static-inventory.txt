@@ -19,10 +19,10 @@ Environment variables with prefix ASIDE_ in the daemon:
   (ASIDE_CLI_AUTH_PATH is documented, not seen in this binary search.)
 CLI install candidate directories (strings): ~/.local/bin, ~/.aside/bin. VERIFIED strings; INFERRED that these are where
   the CLI would be placed. Neither exists on this Mac.
-MCP-related identifiers in the daemon: many names beginning Mcp (McpManager, McpOAuthProvider, McpStdioConnectionError,
-  McpHttpError, mcpServers, mcp__ prefix). VERIFIED. INFERRED: the daemon is an MCP client that connects to external MCP
-  servers (the mcpServers config key), in addition to whatever server role `aside mcp` plays. The strings do not show
-  which role `aside mcp` uses.
+MCP interface names kept: config key mcpServers; tool-name prefix mcp__; file name mcp-credential-cleanup.json (under
+  ~/.aside/, by name only). VERIFIED. Internal JavaScript identifiers that also contain "Mcp" were seen and are not
+  recorded, because they are not interface names. INFERRED: the daemon contains MCP client code for external servers
+  (from mcpServers and mcp__). The strings do not show which role `aside mcp` uses.
 MCP method names found as strings in the daemon: initialize, tools/list, tools/call, notifications/initialized,
   resources/list. prompts/list was not found. VERIFIED as strings (grep -F counts). Which role (client or server) uses
   them was not determined. INFERRED: they come from an MCP SDK bundled with the daemon.
