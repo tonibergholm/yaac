@@ -53,6 +53,10 @@ pub enum Command {
     SelectTab {
         node: NodeId,
     },
+    /// Switch the window's active Space. Selects that Space's last selected tab, or its first `today` tab.
+    SelectSpace {
+        space: SpaceId,
+    },
     MoveNode {
         node: NodeId,
         to: Placement,
