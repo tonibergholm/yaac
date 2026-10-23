@@ -22,7 +22,6 @@ mod engine;
 mod lifecycle;
 mod log;
 mod nav;
-mod paths;
 mod registry;
 mod rpc;
 mod scheme;

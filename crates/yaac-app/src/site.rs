@@ -95,9 +95,9 @@ fn handle(stream: TcpStream, port: u16, record: &Mutex<Record>) {
     let query = parse_query(query);
     let mut stream = reader.into_inner();
 
-    let (status, extra, body) = route(method, path, &query, &headers, port, record);
+    let (status, extra, body, content_type) = route(method, path, &query, &headers, port, record);
     let head = format!(
-        "HTTP/1.1 {status}\r\n{extra}Content-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\n{extra}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let _ = stream.write_all(head.as_bytes());
@@ -107,7 +107,7 @@ fn handle(stream: TcpStream, port: u16, record: &Mutex<Record>) {
     let _ = stream.read_to_end(&mut sink);
 }
 
-type Response = (&'static str, String, Vec<u8>);
+type Response = (&'static str, String, Vec<u8>, &'static str);
 
 fn route(
     method: &str,
@@ -120,11 +120,19 @@ fn route(
     let _ = method;
     let _ = headers;
     match path {
-        "/remote" => ("200 OK", String::new(), REMOTE.replace("__PORT__", &port.to_string()).into_bytes()),
+        "/remote" => ("200 OK", String::new(), REMOTE.replace("__PORT__", &port.to_string()).into_bytes(), HTML),
         "/set-cookie" => (
             "200 OK",
             "Set-Cookie: yaac_probe=alpha; Path=/\r\n".into(),
             SET_COOKIE_PAGE.as_bytes().to_vec(),
+            HTML,
+        ),
+        "/sw.js" => ("200 OK", String::new(), SERVICE_WORKER.as_bytes().to_vec(), "text/javascript"),
+        "/link-preload" => (
+            "200 OK",
+            "Link: <app://ui/api/v1/rpc>; rel=preload\r\n".into(),
+            b"<!doctype html><title>preload</title><script>document.title = 'preload-loaded';</script>".to_vec(),
+            HTML,
         ),
         "/echo" => {
             let who = query.get("who").cloned().unwrap_or_default();
@@ -133,17 +141,19 @@ fn route(
                 r.cookies.push((who.clone(), cookie));
             }
             let page = ECHO_PAGE.replace("__WHO__", &who);
-            ("200 OK", String::new(), page.into_bytes())
+            ("200 OK", String::new(), page.into_bytes(), HTML)
         }
         "/redirect" => (
             "302 Found",
             "Location: app://ui/\r\n".into(),
             b"redirect".to_vec(),
+            HTML,
         ),
         "/meta-refresh" => (
             "200 OK",
             String::new(),
             b"<!doctype html><meta http-equiv=\"refresh\" content=\"0;url=app://ui/\"><title>meta</title>".to_vec(),
+            HTML,
         ),
         "/report" => {
             let name = query.get("attempt").or_else(|| query.get("name")).cloned().unwrap_or_default();
@@ -153,11 +163,22 @@ fn route(
             if let Ok(mut r) = record.lock() {
                 r.reports.push((name, result));
             }
-            ("204 No Content", String::new(), Vec::new())
+            ("204 No Content", String::new(), Vec::new(), HTML)
         }
-        _ => ("404 Not Found", String::new(), b"not found".to_vec()),
+        _ => ("404 Not Found", String::new(), b"not found".to_vec(), HTML),
     }
 }
+
+const HTML: &str = "text/html; charset=utf-8";
+
+/// A service worker for the service-worker probe. It answers a message by fetching the UI's RPC from
+/// the worker, which is a separate context from the page.
+const SERVICE_WORKER: &str = "self.addEventListener('install', function () { self.skipWaiting(); });\n\
+self.addEventListener('activate', function (e) { e.waitUntil(self.clients.claim()); });\n\
+self.addEventListener('message', function (e) {\n\
+  fetch('app://ui/api/v1/rpc', { method: 'POST', body: '{}' })\n\
+    .then(function (r) { e.source.postMessage('sw:' + r.status); }, function (err) { e.source.postMessage('sw:' + err.name); });\n\
+});\n";
 
 fn parse_query(query: &str) -> HashMap<String, String> {
     query
@@ -243,9 +264,49 @@ const JSON_T = 'application/json';
   });
   await attempt('iframe-redirect-app', () => frame('redirect-frame', { src: '/redirect' }));
   await attempt('iframe-meta-refresh-app', () => frame('meta-frame', { src: '/meta-refresh' }));
+  await attempt('sw-register-fetch-rpc', async () => {
+    if (!('serviceWorker' in navigator)) return 'no-sw';
+    const answer = new Promise(function (resolve) {
+      navigator.serviceWorker.addEventListener('message', function (e) { resolve(e.data); }, { once: true });
+      setTimeout(function () { resolve('sw:timeout'); }, 4000);
+    });
+    await navigator.serviceWorker.register('/sw.js');
+    const ready = await navigator.serviceWorker.ready;
+    ready.active.postMessage('go');
+    return answer;
+  });
+  await attempt('window-open-named-app', async () => { const w = window.open('app://ui/', 'named'); return 'open:' + (w === null ? 'null' : 'window'); });
+  await attempt('anchor-blank-noopener-app', async () => {
+    const a = document.createElement('a'); a.href = 'app://ui/'; a.target = '_blank'; a.rel = 'noopener';
+    document.body.appendChild(a); a.click(); await sleep(300); return 'clicked';
+  });
+  await attempt('link-prerender-app', async () => {
+    const l = document.createElement('link'); l.rel = 'prerender'; l.href = 'app://ui/'; document.head.appendChild(l);
+    await sleep(300); return 'added';
+  });
+  await attempt('anchor-ping-app', async () => {
+    const f = document.createElement('iframe'); f.name = 'ping-frame'; document.body.appendChild(f);
+    const a = document.createElement('a'); a.href = BASE + '/ping-target'; a.target = 'ping-frame'; a.setAttribute('ping', 'app://ui/api/v1/rpc');
+    document.body.appendChild(a); a.click(); await sleep(300); return 'clicked';
+  });
+  await attempt('link-preload-header-app', () => frame('preload-frame', { src: '/link-preload' }));
+  await attempt('websocket-app', async () => {
+    try { new WebSocket('app://ui/'); return 'constructed'; } catch (e) { return 'rejected:' + e.name; }
+  });
+  await attempt('request-navigate-app', async () => {
+    try { const r = new Request('app://ui/api/v1/rpc', { mode: 'navigate' }); return 'constructed:' + r.mode; } catch (e) { return 'rejected:' + e.name; }
+  });
+  await attempt('postmessage-sidebar', async () => {
+    const f = document.createElement('iframe'); f.name = 'pm-frame'; f.src = 'app://ui/sidebar.html';
+    document.body.appendChild(f); await sleep(500);
+    try { f.contentWindow.postMessage({ yaac: 'probe' }, '*'); return 'posted'; } catch (e) { return 'rejected:' + e.name; }
+  });
   report('e-ipc-done', 'remote');
   await sleep(300);
   location.href = 'app://ui/';
+  await sleep(300);
+  report('top-blob-navigate', 'navigating');
+  location.href = URL.createObjectURL(new Blob(['<title>blob</title>'], { type: 'text/html' }));
 })();
 </script>
 "#;

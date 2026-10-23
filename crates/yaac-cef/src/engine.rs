@@ -205,6 +205,12 @@ impl CefEngine {
         request_quit();
     }
 
+    /// The exit code the process returns if the message loop ends now. A harness sets 1 until it has
+    /// passed, so a window that closes early fails the run instead of passing it.
+    pub fn set_exit_code(&self, code: i32) {
+        self.shared.exit_code.store(code, Ordering::SeqCst);
+    }
+
     /// Quits with `code`, closing the windows without asking the browsers. Use it for harness and
     /// error exits. The message loop ends once the last window is gone.
     pub fn quit(&self, code: i32) {

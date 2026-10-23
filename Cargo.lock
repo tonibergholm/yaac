@@ -2050,6 +2050,7 @@ dependencies = [
  "yaac-api",
  "yaac-engine",
  "yaac-model",
+ "yaac-platform",
 ]
 
 [[package]]

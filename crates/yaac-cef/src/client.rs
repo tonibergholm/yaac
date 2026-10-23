@@ -22,11 +22,18 @@ pub(crate) static UNLOAD_CANCELS: AtomicU32 = AtomicU32::new(0);
 fn unload_allowed() -> bool {
     #[cfg(any(debug_assertions, feature = "dev-tools"))]
     {
-        if UNLOAD_CANCELS
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-            .is_ok()
-        {
-            return false;
+        // Take one cancel, if any is left (a compare-and-swap loop; MSRV 1.90 has no `try_update`).
+        loop {
+            let n = UNLOAD_CANCELS.load(Ordering::SeqCst);
+            if n == 0 {
+                break;
+            }
+            if UNLOAD_CANCELS
+                .compare_exchange(n, n - 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                return false;
+            }
         }
     }
     true
@@ -91,6 +98,7 @@ wrap_jsdialog_handler! {
             // The page's beforeunload confirmation is answered here, synchronously. "Stay" cancels
             // the close and leaves every browser as it was.
             let allow = unload_allowed();
+            dev_log!("unload confirmation asked allow={allow}");
             if let Some(callback) = callback {
                 callback.cont(i32::from(allow), None);
             }

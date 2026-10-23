@@ -10,7 +10,6 @@ use crate::client::EngineClient;
 use crate::engine::{Shared, post_after, post_to_ui};
 use crate::log::elog;
 use crate::nav::NavTracker;
-use crate::paths::private_dir;
 use crate::window::{ViewDelegateImpl, WindowDelegateImpl};
 use cef::*;
 use std::cell::RefCell;
@@ -19,6 +18,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use yaac_engine::{EngineCommand, EngineEvent, ViewKind, ViewSpec, WindowSpec};
 use yaac_model::{ProfileId, ViewId, WindowId};
+use yaac_platform::ensure_private_dir as private_dir;
 
 /// Logical width of the sidebar view. The content view takes the rest.
 pub(crate) const SIDEBAR_WIDTH: i32 = 240;
@@ -645,7 +645,9 @@ pub(crate) fn can_close_window(window: WindowId) -> bool {
             continue;
         }
         let Some(host) = browser.host() else { continue };
-        if host.try_close_browser() == 0 {
+        let closed = host.try_close_browser();
+        elog!("try_close browser={} closed={closed}", browser.identifier());
+        if closed == 0 {
             agreed = false;
             break;
         }

@@ -43,6 +43,52 @@ pub enum Stages {
     QuitDuringCreate,
 }
 
+/// Every probe the remote page must report, by name. A missing name fails the E-IPC-1 stage, so a
+/// probe that silently stops running cannot hide a regression.
+const REMOTE_PROBES: &[&str] = &[
+    "fetch-get-rpc",
+    "fetch-post-text-rpc",
+    "fetch-post-json-rpc",
+    "fetch-post-nocors-rpc",
+    "fetch-credentials-rpc",
+    "fetch-sidebar-page",
+    "xhr-post-text-rpc",
+    "xhr-post-json-rpc",
+    "xhr-get-sidebar-page",
+    "form-post-rpc",
+    "anchor-click-app",
+    "window-open-app",
+    "iframe-app-sidebar",
+    "srcdoc-fetch-rpc",
+    "data-iframe-fetch-rpc",
+    "javascript-iframe-rpc",
+    "blob-iframe-rpc",
+    "iframe-redirect-app",
+    "iframe-meta-refresh-app",
+    "sw-register-fetch-rpc",
+    "window-open-named-app",
+    "anchor-blank-noopener-app",
+    "link-prerender-app",
+    "anchor-ping-app",
+    "link-preload-header-app",
+    "websocket-app",
+    "request-navigate-app",
+    "postmessage-sidebar",
+];
+
+/// Sidebar probes whose script is known to stall after a refused navigation: the attempt is still
+/// required to be refused (no escape), and the stall is printed as a finding. Any other stall fails.
+const KNOWN_SIDEBAR_STALLS: &[(&str, &str)] = &[
+    (
+        "iframe-http",
+        "a refused subframe navigation leaves the probe script waiting",
+    ),
+    (
+        "anchor-blank",
+        "a target=_blank click from the UI page leaves the probe script waiting",
+    ),
+];
+
 /// Percent-encodes an HTML page into a `data:` URL. Nothing leaves the machine.
 pub fn data_url(html: &str) -> String {
     let mut out = String::from("data:text/html;charset=utf-8,");
@@ -63,6 +109,8 @@ pub async fn run(
     events: UnboundedReceiver<EngineEvent>,
     calls: UnboundedReceiver<(UiCaller, Request)>,
 ) {
+    // Until the stages pass, a window that closes early is a failed run.
+    engine.set_exit_code(1);
     if stages == Stages::QuitDuringCreate {
         let outcome = match Site::start() {
             Ok(site) => {
@@ -80,7 +128,10 @@ pub async fn run(
             Err(error) => Err(format!("site: {error}")),
         };
         match outcome {
-            Ok(()) => println!("HARNESS result=pass stages={stages:?}"),
+            Ok(()) => {
+                engine.set_exit_code(0);
+                println!("HARNESS result=pass stages={stages:?}");
+            }
             Err(reason) => {
                 println!("HARNESS result=fail reason={reason}");
                 engine.quit(1);
@@ -788,6 +839,19 @@ impl Harness {
         self.send(EngineCommand::Load { view: second, url });
         self.report("e-ipc-1", "e-ipc-done", Duration::from_secs(60))
             .await?;
+        let missing: Vec<&str> = REMOTE_PROBES
+            .iter()
+            .copied()
+            .filter(|name| self.site.report(name).is_none())
+            .collect();
+        for name in REMOTE_PROBES {
+            if let Some(result) = self.site.report(name) {
+                println!("HARNESS probe name={name} result={result}");
+            }
+        }
+        if !missing.is_empty() {
+            return Err(format!("E-IPC-1: probes did not report: {missing:?}"));
+        }
         sleep(Duration::from_millis(1500)).await;
         self.drain_calls();
         let content_calls: Vec<&UiCaller> = self
@@ -888,6 +952,10 @@ impl Harness {
             let completed = outcome.is_ok();
             if completed {
                 finished += 1;
+            } else if !KNOWN_SIDEBAR_STALLS.iter().any(|(name, _)| *name == kind) {
+                return Err(format!(
+                    "sidebar probe {kind} stalled and is not a known stall"
+                ));
             }
             let escaped = self.history[self.cursor..].iter().any(|e| {
                 matches!(e, EngineEvent::Navigated { view, url, .. } if *view == sidebar && !url.starts_with("app://ui/"))
