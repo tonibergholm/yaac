@@ -334,6 +334,7 @@ pub mod test_hooks {
     /// Answers the next `n` unload (beforeunload) confirmations with "stay": the close is cancelled.
     pub fn cancel_next_unloads(n: u32) {
         crate::client::UNLOAD_CANCELS.store(n, Ordering::SeqCst);
+        crate::log::dev_log!("test hook: cancel_next_unloads({n})");
     }
 
     /// Makes new profiles look not ready for `delay` after the call, so a `CreateView` stays pending.

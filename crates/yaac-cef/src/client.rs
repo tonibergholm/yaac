@@ -96,13 +96,16 @@ wrap_jsdialog_handler! {
             callback: Option<&mut JsdialogCallback>,
         ) -> i32 {
             let browser_id = browser.map(|b| b.identifier());
-            // The page's beforeunload confirmation is answered here, synchronously. "Stay" cancels
-            // the close and leaves every browser as it was.
-            let allow = unload_allowed();
+            // The page's beforeunload confirmation is answered here, synchronously. A prompt from
+            // a navigation or reload is always allowed and never touches the window. During a close
+            // attempt, "stay" cancels the close and leaves every browser as it was.
+            let in_close = browser_id.is_some_and(ui::close_attempt_active);
+            let armed = UNLOAD_CANCELS.load(Ordering::SeqCst);
+            let allow = !in_close || unload_allowed();
             if let Some(callback) = callback {
                 callback.cont(i32::from(allow), None);
             }
-            dev_log!("unload confirmation answered allow={allow}");
+            dev_log!("unload confirmation answered allow={allow} in_close={in_close} armed={armed} browser={browser_id:?}");
             if let Some(browser_id) = browser_id {
                 ui::unload_answered(browser_id, allow);
             }

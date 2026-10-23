@@ -663,10 +663,28 @@ pub(crate) fn can_close_window(window: WindowId) -> bool {
     false
 }
 
-/// A beforeunload confirmation was answered for `browser`. "Stay" cancels the close attempt of its
-/// window: nothing has committed, so the rest of the app keeps running, and the tabs that already
-/// closed in the attempt are reported. "Leave" lets that browser close; the window's close runs
-/// again, so the browsers still open are asked in turn.
+/// True while a close attempt is in progress for the window of `browser`. A beforeunload prompt
+/// that arrives while this is false belongs to a navigation or a reload, not to a close.
+pub(crate) fn close_attempt_active(browser: i32) -> bool {
+    let Some(shared) = shared() else {
+        return false;
+    };
+    let Some((view, _)) = shared.registry.browser(browser) else {
+        return false;
+    };
+    with(|s| {
+        s.views
+            .get(&view)
+            .is_some_and(|v| s.attempts.contains_key(&v.window))
+    })
+}
+
+/// A beforeunload confirmation was answered for `browser`. Only an answer that belongs to a close
+/// attempt does anything: a page's own navigation or reload can raise the same prompt, and it must
+/// never close the window. "Stay" cancels the close attempt of the browser's window: nothing has
+/// committed, so the rest of the app keeps running, and the tabs that already closed in the attempt
+/// are reported. "Leave" lets that browser close; the window's close runs again, so the browsers
+/// still open are asked in turn.
 pub(crate) fn unload_answered(browser: i32, allow: bool) {
     let Some(shared) = shared() else { return };
     let Some((view, _)) = shared.registry.browser(browser) else {
@@ -675,9 +693,12 @@ pub(crate) fn unload_answered(browser: i32, allow: bool) {
     let Some(window) = with(|s| s.views.get(&view).map(|v| v.window)) else {
         return;
     };
+    if !with(|s| s.attempts.contains_key(&window)) {
+        return;
+    }
     if allow {
         post_to_ui(Box::new(move || close_window(window)));
-    } else if with(|s| s.attempts.contains_key(&window)) {
+    } else {
         cancel_attempt(window, &shared);
     }
 }
