@@ -312,17 +312,8 @@ async fn tab_close(harness: &mut Harness) -> Result<(), String> {
             title_pred(first, "first again"),
         )
         .await?;
-    harness.mark();
-    harness.send(EngineCommand::Load {
-        view: sidebar,
-        url: SIDEBAR_URL.into(),
-    });
     harness
-        .expect_one(
-            "after-close-rpc",
-            "sidebar answers",
-            title_pred(sidebar, "rpc-ok"),
-        )
+        .reload_sidebar_and_wait_for_rpc(sidebar, "after-close-rpc")
         .await?;
     println!("HARNESS step=tab-middle-after result=ok");
 
@@ -353,18 +344,10 @@ async fn tab_close(harness: &mut Harness) -> Result<(), String> {
             "closing the last content view closed the window (events {since}, attempts {entered})"
         ));
     }
-    harness.mark();
-    harness.send(EngineCommand::Load {
-        view: sidebar,
-        url: SIDEBAR_URL.into(),
-    });
     harness
-        .expect_one(
-            "sidebar-alive",
-            "sidebar still answers",
-            title_pred(sidebar, "rpc-ok"),
-        )
+        .reload_sidebar_and_wait_for_rpc(sidebar, "sidebar-alive")
         .await?;
+    println!("HARNESS step=tab-close result=ok");
     Ok(())
 }
 
@@ -527,6 +510,30 @@ impl Harness {
         self.expect_within(step, STEP_TIMEOUT, preds).await
     }
 
+    /// Reloads the sidebar and waits until the engine has answered one more RPC from it. The title is
+    /// not a reliable signal here: the coalescer drops a title that ends where the last one did.
+    async fn reload_sidebar_and_wait_for_rpc(
+        &mut self,
+        sidebar: ViewId,
+        step: &str,
+    ) -> Result<(), String> {
+        let before = self.engine.rpc_answered();
+        self.send(EngineCommand::Load {
+            view: sidebar,
+            url: SIDEBAR_URL.into(),
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if self.engine.rpc_answered() > before {
+                return Ok(());
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        Err(format!(
+            "{step}: the sidebar's RPC was not answered after a reload"
+        ))
+    }
+
     async fn expect_one(
         &mut self,
         step: &str,
@@ -683,12 +690,9 @@ impl Harness {
         // requires `result=pass`), not by the exit code.
         self.mark();
         self.engine.set_exit_code(0);
-        self.send(EngineCommand::Close { view: second });
-        self.send(EngineCommand::Close { view: sidebar });
-        if all {
-            // The isolation views are closed with the rest.
-            self.send(EngineCommand::Close { view: ViewId(4) });
-        }
+        // A window close, as the red button or Cmd-Q makes it. Closing views one by one is a tab
+        // close and leaves the window open.
+        self.engine.close_windows();
         let first = self
             .expect(
                 "close",
@@ -1222,7 +1226,6 @@ fn created_pred(view: ViewId) -> Pred {
     Box::new(move |e| matches!(e, EngineEvent::Created { view: v } if *v == view))
 }
 
-#[allow(dead_code)] // used by the tab-close stage
 fn closed_pred(view: ViewId) -> Pred {
     Box::new(move |e| matches!(e, EngineEvent::Closed { view: v } if *v == view))
 }

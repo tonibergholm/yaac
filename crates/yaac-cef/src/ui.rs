@@ -41,7 +41,8 @@ struct WindowEntry {
 struct ViewEntry {
     window: WindowId,
     kind: ViewKind,
-    view: BrowserView,
+    /// The Views object. `None` once a tab close released it (see `tab_do_close`).
+    view: Option<BrowserView>,
     /// Set in `on_after_created`, cleared in `on_before_close`.
     browser: Option<Browser>,
     /// Counted in the live totals (set at `Created`, cleared at close).
@@ -65,10 +66,10 @@ struct State {
     queue: VecDeque<Queued>,
     pump_scheduled: bool,
     closing: HashSet<WindowId>,
-    /// Windows whose close attempt committed.
-    committed: HashSet<WindowId>,
     /// Browsers whose tab close was requested through `Close{view}`.
     tab_closing: HashSet<i32>,
+    /// Windows whose close attempt committed.
+    committed: HashSet<WindowId>,
     /// Close attempts in progress, with the `Closed` events they hold back.
     attempts: HashMap<WindowId, Vec<ViewId>>,
 }
@@ -248,27 +249,30 @@ fn with_browser(view: ViewId, op: impl FnOnce(&Browser)) {
     }
 }
 
-/// Closes one tab. The browser is marked first, so its `on_do_close` (which runs after its unload
-/// handlers) detaches the tab's `BrowserView` instead of notifying the window. See `tab_do_close`.
+/// Closes one tab. CEF Views closes the parent window when a browser in it closes, unless the
+/// browser's `on_do_close` returns true and the application then destroys the browser's
+/// `BrowserView` itself (CEF documentation for `DoClose` with Views). So the browser is marked here,
+/// and `tab_do_close` completes the close. The close is forced: the page's own close handling (a
+/// `beforeunload` prompt) is not waited for, because a tab whose close button was pressed must
+/// close. `on_before_close` then reports the view closed as usual.
 fn close_tab(view: ViewId) {
     let browser = with(|s| s.views.get(&view).and_then(|entry| entry.browser.clone()));
     match browser {
         Some(browser) => {
             with(|s| s.tab_closing.insert(browser.identifier()));
-            close_browser(&browser, false);
+            elog!("tab close view={view}");
+            close_browser(&browser, true);
         }
         None => elog!("dropped close view={view} reason=no-browser"),
     }
 }
 
-/// `on_do_close` for a browser. A tab closed by `Close{view}` must not notify its top-level window
-/// (CEF Views would then ask the window to close). For that browser the close is completed here by
-/// the tear-down of its view, as the CEF documentation requires when returning true: the view leaves
-/// the window, and the browser closes and reports `on_before_close`. Returns true (handled) for such
-/// a tab, false (the default) otherwise, so a real window close still reaches the window.
+/// `on_do_close` for a browser. For a tab closed by `Close{view}` it returns true (handled) and
+/// completes the close: the tab's `BrowserView` leaves the window and the engine releases its own
+/// reference, so the view is destroyed and the browser reports `on_before_close`. For every other
+/// browser it returns false, the default, so a real window close still reaches the window.
 pub(crate) fn tab_do_close(browser: i32) -> bool {
-    let requested = with(|s| s.tab_closing.remove(&browser));
-    if !requested {
+    if !with(|s| s.tab_closing.remove(&browser)) {
         return false;
     }
     let Some(shared) = shared() else { return true };
@@ -276,14 +280,15 @@ pub(crate) fn tab_do_close(browser: i32) -> bool {
         return true;
     };
     post_to_ui(Box::new(move || {
-        let target = with(|s| {
-            let entry = s.views.get(&view)?;
+        let released = with(|s| {
+            let entry = s.views.get_mut(&view)?;
             let root = s.windows.get(&entry.window)?.root.clone();
-            Some((root, entry.view.clone()))
+            Some((root, entry.view.take()))
         });
-        if let Some((root, browser_view)) = target {
+        if let Some((root, Some(browser_view))) = released {
             let mut handle = View::from(&browser_view);
             root.remove_child_view(Some(&mut handle));
+            // `browser_view` and `handle` drop here: the last reference to the Views object.
         }
     }));
     true
@@ -397,7 +402,7 @@ fn create_view(view: ViewId, window: WindowId, spec: &ViewSpec) -> Outcome {
             ViewEntry {
                 window,
                 kind: spec.kind,
-                view: browser_view.clone(),
+                view: Some(browser_view.clone()),
                 browser: None,
                 counted: false,
                 cancelled,
@@ -472,7 +477,11 @@ fn show(view: ViewId) {
             .iter()
             .filter_map(|id| {
                 let candidate = s.views.get(id)?;
-                (candidate.kind == ViewKind::Content).then(|| (*id, candidate.view.clone()))
+                candidate
+                    .view
+                    .clone()
+                    .filter(|_| candidate.kind == ViewKind::Content)
+                    .map(|v| (*id, v))
             })
             .collect();
         Some((window, siblings))
@@ -515,7 +524,7 @@ fn log_layout(window: WindowId) {
                 .iter()
                 .filter_map(|id| {
                     let view = s.views.get(id)?;
-                    Some((*id, view.kind, view.view.clone()))
+                    Some((*id, view.kind, view.view.clone()?))
                 })
                 .collect::<Vec<_>>(),
         )
@@ -612,7 +621,7 @@ pub(crate) fn browser_closed(view: ViewId) {
     let window_id = entry.window;
     let browser_view = entry.view;
     post_to_ui(Box::new(move || {
-        if let Some(root) = root {
+        if let (Some(root), Some(browser_view)) = (root, browser_view) {
             let mut handle = View::from(&browser_view);
             root.remove_child_view(Some(&mut handle));
         }
