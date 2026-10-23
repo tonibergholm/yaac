@@ -1,6 +1,6 @@
 # 06. Aside, observed from outside (run 2)
 
-Date: 2026-10-23. Branch: `aside-analysis-2`. Status: the CLI command tree, the MCP tool list, the snapshot format and sizes, the daemon transport, and the REPL action surface are settled. Permissions for MCP and CLI calls are partly settled (no Deny rule was tested). The approval indicator and the kill switch are not settled. Run 1 (no CLI) is superseded where noted.
+Date: 2026-10-23. Branch: `aside-analysis-2`. Status: the CLI command tree, the MCP tool list, the snapshot format and sizes, the daemon transport, and the REPL action surface are settled. Permissions for MCP and CLI calls are partly settled (run 3 tested a Deny rule; see section 11). The approval indicator is settled for the Aside window (run 4, section 12). The kill switch is not found: `session stop` does not stop a `repl` run, and the owner check is NEEDS USER. Run 1 (no CLI) is superseded where noted.
 
 Scope rules followed: clean room. No disassembly or decompilation. No copy of Aside's code, prompts, models, or assets into the repo. Aside's tool descriptions and REPL guide were read at runtime and are not reproduced here; the raw captures keep names, parameter shapes, and runtime output only. No read of any file under `~/.aside/` (the CLI reads its own state; this run did not open any file there). No intentional `aside exec` or `aside <prompt>`; one accidental prompt run, see section 0. No `aside memory`, no login, logout, or update. I did not read or list any user tab or window. The CLI's `account status` printed the profile label. The tests ran in the user's only profile, so the public pages I loaded may have left history and cookie entries there (INFERRED). The accidental agent run (section 0) is a further side effect. Test pages: local `127.0.0.1:8765` (served from `/tmp`, stopped at the end), `https://example.com/`, the Wikipedia article "Web browser", and `https://github.com/tonibergholm/yaac`.
 
@@ -22,11 +22,12 @@ Raw captures (small text files): `docs/research/06-aside-observed/`
 - The CLI talks to the daemon over loopback TCP `127.0.0.1:21420`, the same port the browser's network helper uses. The daemon answers `GET /` and `GET /health` with a 231-byte status document and no credentials. Requests with a foreign `Origin` or `Host` get 403. VERIFIED.
 - The snapshot is a YAML-like accessibility tree with `[ref=eN]` tokens. A call returns a unified-style diff against the immediately preceding snapshot call on the same page. After a call with different options it returns the full tree. A hard cap of 16 KiB per snapshot applies (not paginated). example.com (577 bytes of HTML) becomes a 270-byte tree. Wikipedia and a 492 KB list page are both cut at 16 KiB. VERIFIED.
 - The REPL performed fill, click, keyboard input, a download, navigation, evaluate, and screenshots on test pages without any approval prompt or permission error. The `repl` tool has no permission parameter. VERIFIED. Whether tool rules or the Guard setting apply to `repl` calls: UNKNOWN (no Deny rule was tested).
-- Two Aside CLI defects were observed: an unknown word is treated as a paid agent prompt, and a failed REPL script exits with status 0. VERIFIED. One accidental agent session was created and deleted (section 0).
+- Two Aside CLI defects were observed: an unknown word is treated as a paid agent prompt, and a failed REPL script exits with status 0. VERIFIED. One accidental agent session was created and deleted (section 0). Run 4 found a discrepancy, not yet a confirmed defect: `closeTab` returns "closed", while the sidebar keeps the tab (section 12.2).
+- Run 4 (section 12): a `repl` call shows an "Agent Tabs" sidebar group and a REPL panel in the Aside window, and brings Aside to the front. `session stop` does not stop a `repl` run. No UI kill switch was found; the owner check is NEEDS USER.
 
 ## 0. Incidents, limits, and what was not done
 
-Incident (my error, this run): `aside bogus-cmd` was run to test the exit code of an unknown command. The root command treats unknown words as a prompt (usage `aside [options] [prompt...]`), so this started an agent run. It created one ephemeral session titled "Investigating bogus-cmd failure". The session was idle. I ran `aside session stop` (it printed `idle`, exit 0) and `aside session delete` (it printed `ok`, exit 0). After that, `aside session list` showed only the session from the MCP test. The session got a generated title, so a model call probably ran (INFERRED), and credit use is likely. It ran with the default permission (Guard; the help says Guard is the default). UNKNOWN: whether it opened a tab in the user's browser. Checking that would have meant listing tabs or reading session transcripts, which the rules forbid. The user should check Aside's usage history for that time, 2026-10-23 07:26 UTC.
+Incident (my error, this run): `aside bogus-cmd` was run to test the exit code of an unknown command. The root command treats unknown words as a prompt (usage `aside [options] [prompt...]`), so this started an agent run. It created one ephemeral session titled "Investigating bogus-cmd failure". The session was idle. I ran `aside session stop` (it printed `idle`, exit 0) and `aside session delete` (it printed `ok`, exit 0). After that, `aside session list` showed only the session from the MCP test. The session got a generated title, so a model call ran. Run 4 confirmed the charge: Settings > Plan & Usage lists `bogus-cmd` on aside/gpt-6.1-sol at 3 credits (section 12.6). It ran with the default permission (Guard; the help says Guard is the default). UNKNOWN: whether it opened a tab in the user's browser. Checking that would have meant listing tabs or reading session transcripts, which the rules forbid. The user should check Aside's usage history for that time, 2026-10-23 07:26 UTC.
 
 Side effect (my test): the download test saved `probe.txt` (29 bytes) to `~/Downloads`. I compared it with my test string, which matched, and removed it. Aside's download history in Profile 0 probably holds an entry (INFERRED).
 
@@ -124,9 +125,9 @@ VERIFIED (run 2):
 
 DOC (note 05, not re-checked): Settings > Agents has Allow, Ask, and Deny tool rules, and Deny wins. Whether those rules apply to `repl` or `exec` through MCP is UNKNOWN. The Deny test needs a settings change, so it was skipped. It is the first test to run when the owner allows a Settings change.
 
-Indicator (DOC: "Agent Tabs" group in the sidebar, changelog v1.0.914.1): NOT ESTABLISHED. The window-level screenshot was blocked (section 0). The tabs opened by `repl` were not checked in the UI.
+Indicator: settled in run 4 (section 12). The "Agent Tabs" sidebar group appears while a `repl` call holds a tab (VERIFIED). The window-level screenshot was blocked in run 2 and worked in run 4.
 
-Kill switch: UNKNOWN. The `session stop` command stops agent sessions; whether it stops a `repl` run was not tested.
+Kill switch: `session stop` does not stop a `repl` run (VERIFIED, run 4). No UI stop control was found. NEEDS USER (section 12.3).
 
 ## 6. Page representation and token cost (A8, settled)
 
@@ -204,25 +205,29 @@ Settled in this run (VERIFIED):
 - CLI command tree and exit codes: settled (section 2), with the two defects (unknown word as prompt, exit 0 on script error).
 - Carried from run 1, not re-checked: the Chromium major version 154 (INFERRED), the Node.js daemon (INFERRED), and the signing and entitlements (VERIFIED, run 1). The daemon status version differs from the plist version (VERIFIED).
 
+Settled in run 4 (section 12): the window indicator during a `repl` call (VERIFIED), and the accidental run's cost of 3 credits (section 12.6).
+
 Partly settled:
-- Permission model for MCP and CLI calls: the `repl` path showed no prompts. The Deny-rule test is not run.
+- Indicator and kill switch: the window indicator is VERIFIED. `session stop` does not stop a `repl` run (VERIFIED). No UI stop control was found, and the owner check is NEEDS USER (section 12.3).
+- Permission model for MCP and CLI calls: the `repl` path showed no prompts. The Deny-rule test (run 3, section 11) showed that Settings tool rules do not apply to external calls.
 - Daemon auth: the status route needs no credential. Auth on other routes is UNKNOWN.
 - Remote control: the cloud path exists (403 for listing hosts). UNKNOWN beyond that.
 
 Still unknown:
-- Approval indicator on the user's screen (blocked; needs a window ID).
-- Kill switch behaviour for a `repl` run.
+- Indicator outside the Aside window (OS notifications, Dock badge): not checked.
+- Kill switch for an external client: no UI control found; NEEDS USER (section 12.3).
+- What brings Aside to the front during a call (section 12.4).
+- Whether `closeTab` really closes the tab: the runtime says "closed", the sidebar keeps the tab (section 12.2).
 - Audit log of agent or REPL actions.
-- Whether Settings > Agents Deny rules apply to `repl` and `exec` through MCP.
+- Whether Settings > Agents Deny rules apply to `exec` (agent runs) through MCP. The `repl` case was tested in run 3 (section 11) and did not apply.
 - Session id format and expiry. Note 05 (DOC) lists `--session <id>`, which is not in the 1.26 help; `session resume <id>` is the continuation command here.
 - Whether the REPL's `fetch` restricts cross-origin cookies (documented as cookie-bearing).
 - Whether an unauthenticated-looking route beyond `/` and `/health` exists.
 - Tab lifecycle at process exit.
-- Whether the run used credits (the accidental session, section 0).
 
 ## 10. Verdict and recommendations for yaac
 
-Verdict: Aside's agent surface is four MCP tools, a stdio server, and one loopback TCP daemon port that serves an unauthenticated status document. Its REPL-first design gives compact reads (diff, refs, a 16 KiB cap) and fine-grained actions. It applies no visible per-action permission to the REPL path on test pages, and it has two CLI defects that matter for scripting. Its status route answered an unauthenticated request from this user's shell (VERIFIED). INFERRED: any local process can make the same request. Permissions, the indicator, and the kill switch are the open parts.
+Verdict: Aside's agent surface is four MCP tools, a stdio server, and one loopback TCP daemon port that serves an unauthenticated status document. Its REPL-first design gives compact reads (diff, refs, a 16 KiB cap) and fine-grained actions. It applies no visible per-action permission to the REPL path on test pages, and it has two CLI defects that matter for scripting. Its status route answered an unauthenticated request from this user's shell (VERIFIED). INFERRED: any local process can make the same request. Permissions and the kill switch are the open parts. The indicator is settled for the Aside window (run 4, section 12).
 
 Concrete recommendations for the yaac agent interface (inferred from the observations above; each is labelled):
 
@@ -254,13 +259,16 @@ CLI behaviour
 - Leaf `--help` must print leaf help. VERIFIED defect: it printed the top-level help.
 - Machine output should be clean: a value on stdout and status on stderr, with no ANSI in piped output. VERIFIED: Aside mixes the two on stdout.
 
-Indicator and kill switch
-- Still to decide. Note 05 R6 (a per-Space indicator) and R8 (a per-Space kill switch) remain the plan. Aside's indicator is DOC only.
-- Before freezing this, run one check: a window screenshot of a tab the CLI opened, which needs a window ID. INFERRED: the terminal needs Screen Recording permission for the window list to return windows. That is not verified.
+Indicator and kill switch (run 4, section 12)
+- Indicator: Aside shows an "Agent Tabs" sidebar group and a REPL session panel while a call runs (VERIFIED). INFERRED for yaac (note 05 R6): show an indicator in the Space's UI for every active external-control session, and clear it only when the core confirms the session has ended, not when the script returns.
+- Kill switch: Aside's `session stop` does not stop a `repl` run (VERIFIED). INFERRED for yaac (note 05 R8): a stop must abort the running script, close the tab the session owns, and end the session, and the core must confirm all three. No UI stop control was found (NEEDS USER, section 12.3).
+- Tab cleanup: Aside's `closeTab` returned "closed" while the tab stayed in the sidebar (VERIFIED). Do not treat a script's return value as state; check the core's own record.
+- Focus: an external call brought Aside to the front and replaced the active view (VERIFIED, run 4). INFERRED for yaac: do not switch the user's view on an external call; if a call must surface a tab, make that an explicit setting.
+- Screen Recording was not blocked in run 4. The window was captured by ID from a Swift CoreGraphics helper (section 12).
 
-Before freezing the yaac tool schema, run these on Aside with the owner's approval where needed: the Deny-rule test for `repl` (needs one Settings change), the indicator screenshot (needs window access), and a check of whether the CLI's Authorization header is required for any route beyond `/` and `/health`. Also check the accidental session's effect on the user's usage history.
+Before freezing the yaac tool schema, run these: the owner's kill-switch check (section 12.3, NEEDS USER), and a check of whether the CLI's Authorization header is required for any route beyond `/` and `/health`. Done since run 2: the Deny-rule test (run 3) and the indicator screenshot (run 4). The accidental run's cost is settled: 3 credits (section 12.6).
 
-## Verdict on this run
+## Verdict on this run (run 2, superseded by section 12.7)
 
 Settled: CLI command tree, exit codes, the MCP tool list, transport (loopback TCP 21420), the daemon's Origin and Host checks, the snapshot format and sizes, the 16 KiB cap, and the REPL action surface on test pages.
 
@@ -281,4 +289,61 @@ Result: with a Deny rule for `repl` present in Settings, `repl` called through `
 Consequence for yaac: an external client path can sit outside the permission rules. Our core must enforce grants on the same path for the UI, the CLI and MCP (note 05 R3 to R5), with no unguarded route.
 
 Owner action: remove the Deny rule for `repl` if it is still set.
+
+## 12. Indicator and kill switch (run 4, 2026-10-23)
+
+Method. One `aside repl` call opened one tab of its own (example.com), held it for 18 seconds with `sleep`, and closed it in a `finally` block. The Aside window was captured by its ID (1281) with `screencapture -l`. The ID came from a small Swift script that calls CoreGraphics and keeps only windows whose owner is "Aside" and whose layer is 0. Screen Recording did not block the capture. The run also used `lsappinfo front` and `aside session list`. A second probe ran a `repl` with no tab and a 60-second sleep, then called `aside session stop` on that session, which was the only session in the list. Nothing was clicked and no keys were sent. The raw timeline is in `docs/research/06-aside-observed/run4-indicator-and-kill-switch.txt`. It has no window titles. Screenshots stayed under `/tmp/aside-indicator/run4/` and are not committed, because they show the owner's private tabs and chats.
+
+### 12.1 Indicator during the call
+
+- VERIFIED: about 4 seconds after the call began, the sidebar Tabs list held a group labelled "Agent Tabs" with a count badge "1" and a disclosure chevron. The group sat between "New tab" and the regular tabs and held the tab the call opened, titled "Example Domain". The Settings view was still the active view at that point.
+- VERIFIED: about 13 seconds after the call began, the example tab was the active view. The window showed a right-hand panel titled "Aside CLI REPL", with a title dropdown, compose, expand and close icons, an empty chat area, the input "Ask AI a task, @ for context", a model picker "GPT-6.1 Sol" with "High", and the pill "Connect my AI subscription" above the input.
+- VERIFIED: no banner, toast, tab colour change, badge on the tab, or stop button was visible in any capture. A small orange icon with a caret sits at the bottom left of the input. I did not read its label.
+- VERIFIED: the probe with no tab showed the same right-hand panel but no "Agent Tabs" group, because it opened no tab.
+- NOT CHECKED: OS notifications or Dock badges outside the window.
+
+### 12.2 Persistence after the call
+
+- VERIFIED: the "Agent Tabs" group disappeared when the call ended (the captures at +0 s and +10 s). The example tab stayed in the ordinary Tabs list, below "Settings > Plan & Usage", and it stayed the active view. Captures at about 90 seconds and about 3 minutes later showed the same state.
+- VERIFIED: the call printed `[system] last tab closed` and `closed`. The runtime therefore reports the tab closed, while the sidebar still lists it. I could not tell whether the browser's own tab was closed, because listing tabs is forbidden. UNKNOWN: whether the tab is still live. The owner should close it (section 12.3, step 1).
+- VERIFIED: the right-hand "Aside CLI REPL" panel stayed open after the call and was still empty, although `aside session list` showed no sessions.
+- VERIFIED: the sidebar "Chats" section showed only "New Chat" during and after the call. No session item appeared there.
+- VERIFIED: `aside session list` showed one entry during a call, with status idle, type ephemeral, and the title "Aside CLI REPL". After the call the list was empty. So the session record exists only while the call runs.
+- DOC-consistent (help text only): `aside settings --help` says CLI runs stay off the chat list unless `save-sessions` is true. I did not record the value of the setting.
+
+### 12.3 Kill switch
+
+- VERIFIED: `aside session stop <id>` on a live `repl` session printed `idle` and exited 0. The `repl` kept running. About 5 seconds later it was still alive. It finished on its own after 60 seconds, printing `finished-after-60s` with `ok | 60015ms`. So `session stop` is not a kill switch for `repl`. The agent-run case was not tested, because agent runs are not allowed.
+- VERIFIED: no stop control appeared in the REPL panel during the active call. The orange icon at the bottom left of the input is the only unlabelled control. UNKNOWN: its function.
+- VERIFIED (key names only, values not recorded): `aside settings get` prints four keys: `accountId`, `defaultProfileId`, `defaultProfileSelector`, `saveSessions`. None controls external access.
+- VERIFIED (run 3): the Settings tool rule Deny for `repl` did not stop `repl` calls from `aside mcp` or `aside repl`. So the Agents rules are not a kill switch for external clients.
+- The sidebar Settings list shows these labels: Agents, Plugins & MCPs, Developers, Security & Privacy, Mini popup. I did not open them. UNKNOWN: whether any of them has an external-control switch.
+
+NEEDS USER. The owner can do these. Step 2 needs one terminal command. None needs a Settings change, and the owner should change nothing.
+1. Close the tab "Example Domain" in the sidebar's Tabs list. It is my test tab. It is the only example.com tab, and it was absent from the baseline. If the "Aside CLI REPL" panel is still open, close it with its X at the top right.
+2. Kill-switch test, about 2 minutes. In a terminal, run `aside repl "await sleep(60000); console.log('done')"`. This opens no tab. While it runs, hover over the controls at the top right of the "Aside CLI REPL" panel and over the orange icon at the bottom left of the input, and note their labels. Do not click them yet. Then click the panel's X and check whether the terminal command ends early. Report the labels, and whether the command kept running after the X.
+3. Open Settings > Developers, Settings > Agents and Settings > Security & Privacy. Report any toggle or label about external clients, MCP, the CLI or remote control, with its state. Change nothing.
+
+### 12.4 Focus
+
+- VERIFIED: before the call, the front application was "T3 Code (Nightly)". INFERRED: it is the app that hosted my shell. It was still in front at +4 s. At +13 s the front application was "Aside", and it stayed in front in the later captures.
+- VERIFIED: the Aside window was already on screen, so the call did not restore it from hidden. It brought Aside to the front and made the example tab the active view, which replaced the owner's Settings view. The Settings view was not restored afterwards.
+- UNKNOWN: the trigger. The change happened between +4 s and +13 s. The repl printed the snapshot at once, so the activation could come from `openTab`, from the snapshot, or from the panel opening. The probe with no tab did not record the front application.
+
+### 12.5 Other items
+
+- VERIFIED: no confirmation prompt for any `repl` action in these runs. The "Connect my AI subscription" pill is an account action, not an approval. The earlier runs (sections 5 and 7) also showed no prompt for download or evaluate.
+- VERIFIED: no per-site grant or permission prompt appeared in any capture. Settings > Security & Privacy was not opened, so UNKNOWN for per-site grants.
+- VERIFIED: the capture size changed between captures (1246 by 1076 pixels, then 1312 by 1142) while the CoreGraphics bounds stayed at 1200 by 1030. The cause is not established.
+
+### 12.6 Credits for the accidental run (section 0)
+
+- VERIFIED: Settings > Plan & Usage lists the credit rows for October 2026. One row is "bogus-cmd", model aside/gpt-6.1-sol, 3 credits, Oct 23 10:26 AM local time. A second row, "Generated task title", model aside/gpt-6-luna, is 0 credits. So the accidental run cost 3 credits. I did not re-check the usage list after this run.
+- VERIFIED: no "Agent Tabs" group was visible in the baseline capture at 13:07, so the accidental run left no visible tab group at that point. Whether it opened a tab earlier is still UNKNOWN.
+
+### 12.7 Verdict for run 4
+
+- The window indicator is settled (VERIFIED): a sidebar "Agent Tabs" group with a count, a REPL session panel in the window, and the tab in the group, all during the call. Once the call ends, the group disappears, but the tab and the panel stay.
+- The kill switch is not found. `session stop` does not stop a `repl` run (VERIFIED). No UI stop control was found (VERIFIED). The owner check in section 12.3 is required (NEEDS USER).
+- Design consequences for yaac are in section 10. The most important are that closing must be confirmed against the core's own state, and that an external call must not change the user's active view.
 
