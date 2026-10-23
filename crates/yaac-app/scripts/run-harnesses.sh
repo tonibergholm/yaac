@@ -54,7 +54,24 @@ guard_linux() {
     log=$(mktemp -d "$TMPDIR/harness-logs.XXXXXX")
 }
 
-[ "$os" = Linux ] && guard_linux
+# YAAC_OZONE=headless: no compositor at all. Chromium's headless Ozone platform runs the stages
+# without a display, so nothing can reach any session. It checks the engine and the harnesses, not
+# window painting, decorations or input; those need the nested Hyprland session (see the M2 spike
+# note). Every display variable is removed so this mode cannot attach to a session by accident.
+ozone_arg=
+if [ "${YAAC_OZONE:-}" = headless ]; then
+    [ "$os" = Linux ] || { echo "run-harnesses: YAAC_OZONE=headless is for Linux" >&2; exit 2; }
+    unset WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE
+    export HOME=$YAAC_TEST_HOME/home XDG_CONFIG_HOME=$YAAC_TEST_HOME/config \
+        XDG_DATA_HOME=$YAAC_TEST_HOME/data XDG_CACHE_HOME=$YAAC_TEST_HOME/cache \
+        XDG_STATE_HOME=$YAAC_TEST_HOME/state TMPDIR=$YAAC_TEST_HOME/tmp
+    mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" "$TMPDIR"
+    log=$(mktemp -d "$TMPDIR/harness-logs.XXXXXX")
+    ozone_arg=--ozone-platform=headless
+    echo "run-harnesses: headless Ozone mode (no compositor)"
+elif [ "$os" = Linux ]; then
+    guard_linux
+fi
 
 # No process of this bundle may outlive a stage: zygotes and renderers can survive a killed browser.
 leftover() {
@@ -66,7 +83,7 @@ leftover() {
 
 run() { # name, expected-exit-zero, args...
     name=$1; want_zero=$2; shift 2
-    timeout 300 "$app" "$@" >"$log/$name.log" 2>&1
+    timeout 300 "$app" "$@" $ozone_arg >"$log/$name.log" 2>&1
     code=$?
     result=$(grep -E '^HARNESS result=' "$log/$name.log" | tail -1)
     if [ "$want_zero" = yes ]; then
@@ -84,11 +101,11 @@ for h in rpc quit tab engine; do run "$h-harness" yes "--$h-harness"; done
 YAAC_HARNESS_FAIL_AFTER_CLOSE=1 run "harness-self-test" no --engine-harness
 
 data=$(mktemp -d "${TMPDIR:-/tmp}/yaac-persist.XXXXXX")
-YAAC_DATA_DIR=$data timeout 90 "$app" --persist-write >"$log/persist-write.log" 2>&1 && \
-YAAC_DATA_DIR=$data timeout 90 "$app" --persist-verify >"$log/persist-verify.log" 2>&1
+YAAC_DATA_DIR=$data timeout 90 "$app" --persist-write $ozone_arg >"$log/persist-write.log" 2>&1 && \
+YAAC_DATA_DIR=$data timeout 90 "$app" --persist-verify $ozone_arg >"$log/persist-verify.log" 2>&1
 if [ $? -eq 0 ]; then echo "ok   persist write+verify ($(grep SELFTEST "$log/persist-verify.log" | tail -1))"; else echo "FAIL persist; logs in $log"; fail=1; fi
 leftover persist
-YAAC_DATA_DIR=$data timeout 30 "$app" --persist-write >/dev/null 2>&1
+YAAC_DATA_DIR=$data timeout 30 "$app" --persist-write $ozone_arg >/dev/null 2>&1
 [ $? -eq 2 ] && echo "ok   persist-write on a non-empty directory exits 2" || { echo "FAIL persist-write on a non-empty directory must exit 2"; fail=1; }
 
 [ $fail -eq 0 ] && echo "all harnesses passed" || echo "FAILED"
