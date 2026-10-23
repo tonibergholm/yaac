@@ -1,7 +1,8 @@
 //! SQLite persistence: schema, numbered migrations, and the `Store` implementation.
 //!
 //! One connection, one writer. Each batch runs in one `BEGIN IMMEDIATE` transaction. Foreign keys
-//! are deferred to commit, so statement order inside a batch does not matter.
+//! are deferred to commit, so a batch may create a child before its parent, and delete a subtree in
+//! any order. `ON DELETE SET NULL` is not deferred; see `apply.rs`.
 
 mod apply;
 mod codec;
@@ -41,6 +42,7 @@ impl SqliteStore {
         // Per connection, and a no-op inside a transaction, so it must come first.
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(backend)?;
+        schema::refuse_newer(&conn)?;
         if on_disk {
             let mode: String = conn
                 .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
@@ -60,7 +62,11 @@ impl SqliteStore {
 
 impl Store for SqliteStore {
     fn load(&mut self) -> Result<Workspace, StoreError> {
-        load::load(&self.conn)
+        // One read transaction, so the reference check and the row reads see one snapshot.
+        let tx = self.conn.transaction().map_err(backend)?;
+        let workspace = load::load(&tx)?;
+        tx.commit().map_err(backend)?;
+        Ok(workspace)
     }
 
     fn apply(&mut self, batch: Vec<StoreOp>) -> Result<(), StoreError> {

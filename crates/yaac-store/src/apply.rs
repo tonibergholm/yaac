@@ -2,12 +2,18 @@
 //! `INSERT OR REPLACE`: REPLACE deletes the old row first, which would fire `ON DELETE SET NULL` on
 //! `session.selected_node_id` for every update of the selected node.
 //!
-//! Rules enforced by the schema, all checked at commit, so the order of ops in a batch is free:
+//! Rules enforced by the schema. The foreign-key rules are checked at commit, so their order within
+//! a batch does not matter:
 //! - a node's parent must exist and sit in the same container (a missing parent or a container
 //!   mismatch fails the batch);
 //! - a container's profile must equal its Space's profile;
 //! - a container that still holds nodes cannot be deleted, so a removed subtree must be listed
 //!   completely.
+//!
+//! `ON DELETE SET NULL` on `session.selected_node_id` is not deferred. It runs when the node row is
+//! deleted, so a batch that deletes a node and later upserts a session that selects it fails at
+//! commit, while the reverse order commits. A batch that deletes and re-creates the same node id
+//! clears the selection. The core must not do that.
 //!
 //! Tree shape (parent kind, split arity, cycles) is not checked here. `yaac-model` enforces it, and
 //! `load` rejects a stored tree that breaks it.

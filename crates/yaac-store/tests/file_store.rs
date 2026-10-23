@@ -605,9 +605,79 @@ fn rejected_batch_writes_nothing_by_row_count() {
         ])
         .expect("setup");
     let bad = node(ContainerId::new(), None, "a0", NodeKind::Tab);
-    assert!(store.apply(vec![StoreOp::UpsertNode(bad)]).is_err());
+    let later = profile("later");
+    assert!(
+        store
+            .apply(vec![
+                StoreOp::UpsertProfile(later),
+                StoreOp::UpsertNode(bad),
+            ])
+            .is_err()
+    );
     let conn = raw(&path);
     assert_eq!(count(&conn, "node"), 0);
     assert_eq!(count(&conn, "container"), 1);
-    assert_eq!(count(&conn, "profile"), 1);
+    assert_eq!(
+        count(&conn, "profile"),
+        1,
+        "the valid op in the failed batch must roll back"
+    );
+}
+
+#[test]
+fn container_space_profile_mismatch_is_rejected() {
+    let dir = TempDir::new("profile-mismatch");
+    let path = dir.file();
+    let mut store = open(&path);
+    let a = profile("a");
+    let b = profile("b");
+    let space = Space {
+        id: SpaceId::new(),
+        profile_id: a.id,
+        name: "A".into(),
+        theme: None,
+        position: pos("a0"),
+        agent_enabled: false,
+    };
+    // Container in profile B, pointing at a Space of profile A.
+    let mismatched = Container {
+        id: ContainerId::new(),
+        profile_id: b.id,
+        space_id: Some(space.id),
+        kind: ContainerKind::Today,
+    };
+    let result = store.apply(vec![
+        StoreOp::UpsertProfile(a),
+        StoreOp::UpsertProfile(b),
+        StoreOp::UpsertSpace(space),
+        StoreOp::UpsertContainer(mismatched),
+    ]);
+    assert!(
+        result.is_err(),
+        "a container's profile must equal its Space's profile"
+    );
+    let conn = raw(&path);
+    assert_eq!(count(&conn, "container"), 0);
+    assert_eq!(count(&conn, "space"), 0);
+}
+
+#[test]
+fn container_holding_nodes_is_not_deleted() {
+    let dir = TempDir::new("container-delete");
+    let path = dir.file();
+    let mut store = open(&path);
+    let p = profile("p");
+    let c = favorites_of(&p);
+    let root = node(c.id, None, "a0", NodeKind::Tab);
+    store
+        .apply(vec![
+            StoreOp::UpsertProfile(p),
+            StoreOp::UpsertContainer(c.clone()),
+            StoreOp::UpsertNode(root),
+        ])
+        .expect("setup");
+    assert!(store.apply(vec![StoreOp::DeleteContainer(c.id)]).is_err());
+    let conn = raw(&path);
+    assert_eq!(count(&conn, "container"), 1);
+    assert_eq!(count(&conn, "node"), 1);
 }

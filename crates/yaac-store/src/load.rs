@@ -4,7 +4,9 @@ use crate::codec::{decode_enum, flag, parse_id, parse_position, to_u32};
 use crate::{backend, corrupt};
 use rusqlite::{Connection, OptionalExtension, Row};
 use yaac_core::StoreError;
-use yaac_model::{Container, Node, Profile, SessionState, Space, TreeState, Workspace};
+use yaac_model::{
+    Container, ContainerKind, Node, Profile, SessionState, Space, SpaceId, TreeState, Workspace,
+};
 
 pub(crate) fn load(conn: &Connection) -> Result<Workspace, StoreError> {
     check_references(conn)?;
@@ -133,13 +135,22 @@ fn space_row(row: &Row<'_>) -> Result<Space, StoreError> {
 const CONTAINERS: &str = "SELECT id, profile_id, space_id, kind FROM container";
 
 fn container_row(row: &Row<'_>) -> Result<Container, StoreError> {
+    let space_id: Option<SpaceId> = optional_text(row, 2)?
+        .map(|raw| parse_id(&raw))
+        .transpose()?;
+    let kind: ContainerKind = decode_enum(&text(row, 3)?)?;
+    // The schema has the same CHECK; repeated here because a file edited outside the store can
+    // bypass it.
+    if (kind == ContainerKind::Favorites) != space_id.is_none() {
+        return Err(corrupt(format!(
+            "container of kind {kind:?} has space_id {space_id:?}"
+        )));
+    }
     Ok(Container {
         id: parse_id(&text(row, 0)?)?,
         profile_id: parse_id(&text(row, 1)?)?,
-        space_id: optional_text(row, 2)?
-            .map(|raw| parse_id(&raw))
-            .transpose()?,
-        kind: decode_enum(&text(row, 3)?)?,
+        space_id,
+        kind,
     })
 }
 
