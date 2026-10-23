@@ -1,0 +1,40 @@
+Run 4 text capture: indicator, focus and kill-switch probe (2026-10-23)
+Times are local (UTC+3). Screenshots are kept under /tmp/aside-indicator/run4/ and are NOT committed (they show the owner's private tabs and chats).
+Window titles were never recorded. Only window id, owner, layer, on-screen flag and bounds were recorded.
+
+Main Aside window: id 1281, layer 0, on screen. Bounds 171,-1481 1200x1030. Unchanged for the whole run.
+Other Aside windows: id 1282 (layer 0, off screen; bounds changed during the first call, cause not established); id 1279 (layer 101, 62x40, off screen throughout). No new on-screen Aside window appeared during any call.
+
+Front application (lsappinfo front, name only):
+  13:07:36 before the first call ........ "T3 Code (Nightly)"
+  13:07:40 (call +4 s) ................. "T3 Code (Nightly)"
+  13:07:49 (call +13 s) ................ "Aside"  (in front)
+  13:07:55 after the call .............. "Aside"
+  13:08:06 (+10 s) ..................... "Aside"
+
+Capture labels, own tab only (example.com), first call (aside repl, sleep 18 s, try/finally closeTab):
+  Baseline (13:07:36): sidebar Tabs list shows "New tab" and "Settings > Plan & Usage" only. Main pane shows the Settings view. No right-hand panel.
+  +4 s (13:07:40): Tabs list shows "New tab", then a group labelled "Agent Tabs" with a count badge "1" and a disclosure chevron, containing "Example Domain" (globe icon), then "Settings > Plan & Usage". The Settings view is still the active view. No right-hand panel.
+  +13 s (13:07:49): The "Example Domain" tab is active (address bar "example.com", title "Example Domain"). A right-hand panel is open, headed "Aside CLI REPL" (dropdown caret), with compose, expand and close icons. Empty chat area. Input placeholder "Ask AI a task, @ for context". Model picker "GPT-6.1 Sol" with "High". Pill "Connect my AI subscription" above the input. Small orange icon with a caret at the bottom left of the input (label not read). No stop control seen. No banner, no toast, no colour change on the tab.
+  After the call (13:07:55) and +10 s (13:08:06): The "Agent Tabs" group is gone. "Example Domain" is in the ordinary Tabs list, below "Settings > Plan & Usage", and is still listed and active. The right-hand panel is still open and empty.
+  Later (13:09:17, no action, about 90 s after the call): same as after the call. The "Example Domain" tab is still listed.
+  Final (13:10:48, about 3 min after the call): same. The "Example Domain" tab is still listed.
+
+Session list (aside session list, the first 8 characters of the id are kept):
+  Before the first call: "No sessions."
+  During the first call (+4 s): one line, id Wqg7ogVe..., idle, ephemeral, "Aside CLI REPL", created 10:07:36Z (the call start time).
+  After the call: "No sessions."
+
+Kill-switch probe (no tab opened; aside repl "await sleep(60000); console.log('finished-after-60s')"):
+  13:09:17 repl started. Session list: one line, id YNsGpBOP..., idle, ephemeral, "Aside CLI REPL".
+  13:09:23 capture: "Aside CLI REPL" panel present, no "Agent Tabs" group (no tab opened by this call).
+  13:09:23 aside session stop <that id>: stdout "idle", exit 0.
+  13:09:28 repl still running (kill -0 on its pid).
+  13:10:20 repl exited. Stdout "finished-after-60s", stderr "[ok | 60015ms]", stderr empty. The sleep ran to the end, so stop did not interrupt it.
+  Session list after: "No sessions."
+
+CLI settings keys (aside settings get, key names only, values not recorded): accountId, defaultProfileId, defaultProfileSelector, saveSessions. No key for external control.
+
+Credits page (Settings > Plan & Usage, baseline capture, owner's usage list): row "bogus-cmd", model aside/gpt-6.1-sol, 3 credits, Oct 23 10:26 AM. Row "Generated task title", model aside/gpt-6-luna, 0 credits, same time.
+
+Owner's leftover state: one tab "Example Domain" (example.com) is still in the Tabs list. It was opened by this run and is the only example.com tab (absent from the baseline). Not closed by this run: the rules forbid clicking.
