@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>sidebar-probe</title>
+<script>
+  // Loaded into the sidebar view by the harness. Every navigation the page attempts away from
+  // app://ui/ must be refused: the page stays here, and the script goes on to the next attempt.
+  // The port of the local test site comes in the query string.
+  var base = 'http://127.0.0.1:' + new URLSearchParams(location.search).get('port');
+  function report(name, result) {
+    fetch(base + '/report?attempt=' + encodeURIComponent(name) + '&result=' + encodeURIComponent(result), { mode: 'no-cors' }).catch(function () {});
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  (async function () {
+    report('sb-location-http', 'sent'); location.href = base + '/x'; await sleep(400);
+    report('sb-window-open-http', 'sent'); window.open(base + '/y'); await sleep(300);
+    report('sb-iframe-http', 'sent');
+    var f = document.createElement('iframe'); f.src = base + '/z'; document.body.appendChild(f); await sleep(400);
+    report('sb-anchor-blank', 'sent');
+    var a = document.createElement('a'); a.href = base + '/w'; a.target = '_blank'; document.body.appendChild(a); a.click(); await sleep(300);
+    report('sb-location-data', 'sent'); location.href = 'data:text/html,<p>x</p>'; await sleep(400);
+    report('sb-location-javascript', 'sent'); location.href = 'javascript:void(0)'; await sleep(400);
+    report('sb-done', 'sidebar-probe');
+  })();
+</script>

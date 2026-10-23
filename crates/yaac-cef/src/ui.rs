@@ -1,15 +1,22 @@
-//! UI-thread state and command execution. CEF objects live here, in a thread-local, and are never
-//! handed to other threads. Callbacks and commands take short borrows of the state and never call
-//! into CEF while a borrow is held, so a re-entrant callback cannot hit a RefCell conflict.
+//! UI-thread state and command execution. CEF objects live here, in a thread-local, and never
+//! leave the UI thread. Callbacks and commands take short borrows of the state and do not call CEF
+//! while a borrow is held, so a re-entrant callback cannot hit a RefCell conflict.
+//!
+//! Commands run strictly in the order they were sent. A command that needs something not ready yet
+//! (a browser that is still being created, a profile that is still initializing) waits at the head
+//! of the queue, and everything behind it waits too.
 
-use crate::client::{EngineClient, NavState};
-use crate::engine::{Shared, post_to_ui};
+use crate::client::EngineClient;
 use crate::log::elog;
+use crate::engine::{Shared, post_after, post_to_ui};
+use crate::nav::NavTracker;
+use crate::paths::private_dir;
 use crate::window::{ViewDelegateImpl, WindowDelegateImpl};
 use cef::*;
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use yaac_engine::{EngineCommand, EngineEvent, ViewKind, ViewSpec, WindowSpec};
 use yaac_model::{ProfileId, ViewId, WindowId};
 
@@ -37,8 +44,16 @@ struct ViewEntry {
     view: BrowserView,
     /// Set in `on_after_created`, cleared in `on_before_close`.
     browser: Option<Browser>,
-    /// Commands that arrived before the browser existed. Flushed on creation.
-    pending: Vec<EngineCommand>,
+    /// Counted in the live totals (set at `Created`, cleared at close).
+    counted: bool,
+    /// The window closed before this view's browser existed. The browser is closed when it appears.
+    cancelled: bool,
+}
+
+#[derive(Clone)]
+struct Queued {
+    command: EngineCommand,
+    attempts: u32,
 }
 
 #[derive(Default)]
@@ -47,10 +62,9 @@ struct State {
     windows: HashMap<WindowId, WindowEntry>,
     views: HashMap<ViewId, ViewEntry>,
     contexts: HashMap<ProfileId, RequestContext>,
-    /// Commands waiting for a profile to initialize, in order. While it is non-empty, new commands
-    /// queue behind it, so the order the core sent them is kept.
-    deferred: VecDeque<(EngineCommand, u32)>,
-    flush_scheduled: bool,
+    queue: VecDeque<Queued>,
+    pump_scheduled: bool,
+    closing: HashSet<WindowId>,
 }
 
 thread_local! {
@@ -70,125 +84,138 @@ pub(crate) fn install(shared: Arc<Shared>) {
     with(|s| s.shared = Some(shared));
 }
 
-/// Runs one command in order. UI thread only.
-pub(crate) fn execute(command: EngineCommand) {
-    let queued = with(|s| !s.deferred.is_empty());
-    if queued {
-        with(|s| s.deferred.push_back((command, 0)));
-        schedule_flush();
-        return;
-    }
-    if let Some(retry) = execute_once(command, 0) {
-        with(|s| s.deferred.push_back(retry));
-        schedule_flush();
-    }
+/// Drops every CEF object this thread holds. Called on the UI thread after the message loop ends,
+/// before `CefShutdown`.
+pub(crate) fn release_ui_state() {
+    let old = with(std::mem::take);
+    drop(old);
 }
 
-/// Retries deferred commands in order. Stops at the first one that is still not ready.
-pub(crate) fn flush_deferred() {
-    with(|s| s.flush_scheduled = false);
+fn quitting() -> bool {
+    shared().is_some_and(|s| s.quitting.load(Ordering::SeqCst))
+}
+
+/// Accepts a command from the core. It runs when everything sent before it has run.
+pub(crate) fn execute(command: EngineCommand) {
+    if quitting() {
+        elog!("dropped command reason=quitting");
+        return;
+    }
+    with(|s| s.queue.push_back(Queued { command, attempts: 0 }));
+    pump();
+}
+
+/// Runs queued commands from the head while they are ready.
+fn pump() {
     loop {
-        let next = with(|s| s.deferred.pop_front());
-        let Some((command, attempts)) = next else {
+        let Some(item) = with(|s| s.queue.front().cloned()) else { return };
+        if !is_ready(&item.command) {
+            schedule_pump();
             return;
-        };
-        if let Some(retry) = execute_once(command, attempts) {
-            with(|s| s.deferred.push_front(retry));
-            schedule_flush();
+        }
+        with(|s| s.queue.pop_front());
+        if let Some(retry) = run(item.command, item.attempts) {
+            with(|s| s.queue.push_front(retry));
+            schedule_pump();
             return;
         }
     }
 }
 
-fn schedule_flush() {
-    let already = with(|s| std::mem::replace(&mut s.flush_scheduled, true));
+fn schedule_pump() {
+    let already = with(|s| std::mem::replace(&mut s.pump_scheduled, true));
     if already {
         return;
     }
-    let mut task = FlushTask::new();
-    post_delayed_task(ThreadId::UI, Some(&mut task), RETRY_MS);
-}
-
-wrap_task! {
-    struct FlushTask {}
-
-    impl Task {
-        fn execute(&self) {
-            flush_deferred();
-        }
+    if !post_after(Box::new(retry_pump), RETRY_MS) {
+        with(|s| s.pump_scheduled = false);
     }
 }
 
-/// Runs one command. Returns the command again, with its attempt count, if it must be retried.
-fn execute_once(command: EngineCommand, attempts: u32) -> Option<(EngineCommand, u32)> {
+fn retry_pump() {
+    with(|s| s.pump_scheduled = false);
+    pump();
+}
+
+/// A command can run when the browser it targets exists, or was cancelled (and is then dropped).
+/// Creating and showing do not need a browser.
+fn is_ready(command: &EngineCommand) -> bool {
+    match command {
+        EngineCommand::Load { view, .. }
+        | EngineCommand::Reload { view }
+        | EngineCommand::Back { view }
+        | EngineCommand::Forward { view }
+        | EngineCommand::Close { view } => with(|s| match s.views.get(view) {
+            Some(entry) => entry.browser.is_some() || entry.cancelled,
+            None => true,
+        }),
+        EngineCommand::CreateWindow { .. }
+        | EngineCommand::CreateView { .. }
+        | EngineCommand::Show { .. } => true,
+    }
+}
+
+/// Runs one ready command. Returns the command again, with its attempt count, when it must wait.
+fn run(command: EngineCommand, attempts: u32) -> Option<Queued> {
     match command {
         EngineCommand::CreateWindow { window, spec } => create_window(window, &spec),
-        EngineCommand::CreateView { view, window, spec } => {
-            if !create_view(view, window, &spec) {
-                if attempts + 1 >= CREATE_ATTEMPTS {
-                    elog!("error create_view view={view} reason=gave-up attempts={attempts}");
-                } else {
-                    return Some((
-                        EngineCommand::CreateView { view, window, spec },
-                        attempts + 1,
-                    ));
-                }
+        EngineCommand::CreateView { view, window, spec } => match create_view(view, window, &spec) {
+            Outcome::Created => {}
+            Outcome::Retry if attempts + 1 < CREATE_ATTEMPTS => {
+                return Some(Queued {
+                    command: EngineCommand::CreateView { view, window, spec },
+                    attempts: attempts + 1,
+                });
             }
-        }
+            Outcome::Retry => fail_create(view, "profile not ready"),
+            Outcome::Failed(reason) => fail_create(view, reason),
+        },
         EngineCommand::Show { view } => show(view),
-        EngineCommand::Close { view } => {
-            with_browser(view, EngineCommand::Close { view }, |browser| {
-                if let Some(host) = browser.host() {
-                    let _ = host.try_close_browser();
-                }
-            });
-        }
-        EngineCommand::Load { view, url } => {
-            let pending = EngineCommand::Load {
-                view,
-                url: url.clone(),
-            };
-            with_browser(view, pending, |browser| {
-                if let Some(frame) = browser.main_frame() {
-                    frame.load_url(Some(&CefString::from(url.as_str())));
-                }
-            });
-        }
-        EngineCommand::Reload { view } => {
-            with_browser(view, EngineCommand::Reload { view }, |browser| {
-                browser.reload()
-            });
-        }
-        EngineCommand::Back { view } => {
-            with_browser(view, EngineCommand::Back { view }, |browser| {
-                browser.go_back()
-            });
-        }
-        EngineCommand::Forward { view } => {
-            with_browser(view, EngineCommand::Forward { view }, |browser| {
-                browser.go_forward()
-            });
-        }
+        EngineCommand::Close { view } => with_browser(view, |browser| close_browser(browser, false)),
+        EngineCommand::Load { view, url } => with_browser(view, |browser| {
+            if let Some(frame) = browser.main_frame() {
+                frame.load_url(Some(&CefString::from(url.as_str())));
+            }
+        }),
+        EngineCommand::Reload { view } => with_browser(view, |browser| browser.reload()),
+        EngineCommand::Back { view } => with_browser(view, |browser| browser.go_back()),
+        EngineCommand::Forward { view } => with_browser(view, |browser| browser.go_forward()),
     }
     None
 }
 
-/// Runs `op` on the view's browser, or queues `pending` until the browser exists.
-fn with_browser(view: ViewId, pending: EngineCommand, op: impl FnOnce(&Browser)) {
-    let found = with(|s| match s.views.get_mut(&view) {
-        None => Err("unknown view"),
-        Some(entry) => match &entry.browser {
-            Some(browser) => Ok(Some(browser.clone())),
-            None => {
-                entry.pending.push(pending);
-                Ok(None)
-            }
-        },
-    });
-    match found {
-        Ok(Some(browser)) => op(&browser),
-        Ok(None) => elog!("queued command view={view} reason=browser-not-created"),
-        Err(reason) => elog!("dropped command view={view} reason={reason}"),
+enum Outcome {
+    Created,
+    /// Not ready yet (the profile is still initializing). Try again.
+    Retry,
+    Failed(&'static str),
+}
+
+fn fail_create(view: ViewId, reason: &str) {
+    elog!("error create_view view={view} reason={reason}");
+    if let Some(shared) = shared() {
+        shared.emit(EngineEvent::CreateFailed { view });
+    }
+}
+
+/// Runs `op` on the view's browser. A command for a view that has no browser (never created, or
+/// already closed) is dropped with a log line.
+fn with_browser(view: ViewId, op: impl FnOnce(&Browser)) {
+    let browser = with(|s| s.views.get(&view).and_then(|entry| entry.browser.clone()));
+    match browser {
+        Some(browser) => op(&browser),
+        None => elog!("dropped command view={view} reason=no-browser"),
+    }
+}
+
+/// Closes a browser. `force` skips the page's own close handling, used for a crashed renderer.
+fn close_browser(browser: &Browser, force: bool) {
+    if let Some(host) = browser.host() {
+        if force {
+            host.close_browser(1);
+        } else {
+            let _ = host.try_close_browser();
+        }
     }
 }
 
@@ -204,8 +231,7 @@ fn create_window(id: WindowId, spec: &WindowSpec) {
         elog!("error create_window window={id} reason=box-layout");
         return;
     };
-    let mut delegate =
-        WindowDelegateImpl::new(id, root.clone(), spec.width as i32, spec.height as i32);
+    let mut delegate = WindowDelegateImpl::new(id, root.clone(), spec.width as i32, spec.height as i32);
     let window = window_create_top_level(Some(&mut delegate));
     let created = window.is_some();
     with(|s| {
@@ -213,35 +239,27 @@ fn create_window(id: WindowId, spec: &WindowSpec) {
             id,
             WindowEntry {
                 window,
-                root: root.clone(),
+                root,
                 layout,
                 height: spec.height as i32,
                 views: Vec::new(),
             },
         )
     });
-    elog!(
-        "window created window={id} size={}x{} ok={created}",
-        spec.width,
-        spec.height
-    );
+    elog!("window created window={id} size={}x{} ok={created}", spec.width, spec.height);
 }
 
-/// Creates a view. Returns false when the profile is not ready yet, so the command must be
-/// retried. Every other outcome, success included, returns true.
-fn create_view(view: ViewId, window: WindowId, spec: &ViewSpec) -> bool {
+/// Creates a view. `Retry` means the profile is not ready; anything else is final.
+fn create_view(view: ViewId, window: WindowId, spec: &ViewSpec) -> Outcome {
     let Some(shared) = shared() else {
-        elog!("error create_view view={view} reason=not-installed");
-        return true;
+        return Outcome::Failed("not installed");
     };
-    let window_known = with(|s| s.windows.contains_key(&window));
-    if !window_known {
-        elog!("error create_view view={view} reason=unknown-window window={window}");
-        return true;
+    if !with(|s| s.windows.contains_key(&window)) {
+        return Outcome::Failed("unknown window");
     }
-    let Some(mut context) = request_context(spec.profile) else {
-        elog!("error create_view view={view} reason=request-context");
-        return true;
+    let mut context = match request_context(spec.profile) {
+        Ok(context) => context,
+        Err(reason) => return Outcome::Failed(reason),
     };
     // Registered on every attempt. CEF ignores scheme registration on a context that is still
     // initializing, so the registration that counts is the one made just before the view is
@@ -257,7 +275,7 @@ fn create_view(view: ViewId, window: WindowId, spec: &ViewSpec) -> bool {
         view,
         spec.kind,
         shared.clone(),
-        Arc::new(NavState::default()),
+        Arc::new(Mutex::new(NavTracker::default())),
     );
     let width = match spec.kind {
         ViewKind::Sidebar => SIDEBAR_WIDTH,
@@ -275,22 +293,16 @@ fn create_view(view: ViewId, window: WindowId, spec: &ViewSpec) -> bool {
         Some(&mut context),
         Some(&mut delegate),
     ) else {
-        // Expected while the profile initializes; see CREATE_ATTEMPTS.
-        return false;
+        // Expected while the profile initializes; the caller retries up to CREATE_ATTEMPTS.
+        return Outcome::Retry;
     };
 
     shared.registry.add_view(view, spec.kind);
     let attached = with(|s| {
+        let cancelled = s.closing.contains(&window);
         let entry = s.windows.get_mut(&window)?;
         entry.views.push(view);
-        Some((entry.root.clone(), entry.layout.clone()))
-    });
-    let Some((root, layout)) = attached else {
-        // Window closed while the view was being created. Close the view.
-        shared.registry.remove_view(view);
-        return true;
-    };
-    with(|s| {
+        let parts = (entry.root.clone(), entry.layout.clone());
         s.views.insert(
             view,
             ViewEntry {
@@ -298,10 +310,16 @@ fn create_view(view: ViewId, window: WindowId, spec: &ViewSpec) -> bool {
                 kind: spec.kind,
                 view: browser_view.clone(),
                 browser: None,
-                pending: Vec::new(),
+                counted: false,
+                cancelled,
             },
-        )
+        );
+        Some(parts)
     });
+    let Some((root, layout)) = attached else {
+        shared.registry.remove_view(view);
+        return Outcome::Failed("window closed during creation");
+    };
 
     let mut view_handle = View::from(&browser_view);
     match spec.kind {
@@ -316,51 +334,45 @@ fn create_view(view: ViewId, window: WindowId, spec: &ViewSpec) -> bool {
             layout.set_flex_for_view(Some(&mut view_handle), 1);
         }
     }
-    elog!(
-        "view created view={view} window={window} kind={:?} profile={}",
-        spec.kind,
-        spec.profile
-    );
-    true
+    elog!("view created view={view} window={window} kind={:?}", spec.kind);
+    Outcome::Created
 }
 
-/// The request context for a profile, created on first use. Each profile has its own cache path,
-/// and `app://ui` is registered on it, since scheme factories are per context.
-fn request_context(profile: ProfileId) -> Option<RequestContext> {
+/// The request context for a profile, created on first use. Each profile has its own cache path
+/// (a direct child of CEF's root), and every directory on the way is private to the user.
+fn request_context(profile: ProfileId) -> Result<RequestContext, &'static str> {
     if let Some(existing) = with(|s| s.contexts.get(&profile).cloned()) {
-        return Some(existing);
+        return Ok(existing);
     }
-    let shared = shared()?;
-    let cache = shared.data_dir.join("cef").join(profile.to_string());
-    // CEF does not create the profile directory itself; it fails to create the profile without it.
-    if let Err(error) = std::fs::create_dir_all(&cache) {
-        elog!("error profile-dir profile={profile} reason={error}");
-        return None;
+    let shared = shared().ok_or("not installed")?;
+    let root = shared.data_dir.join("cef");
+    let cache = root.join(profile.to_string());
+    if private_dir(&root).and_then(|()| private_dir(&cache)).is_err() {
+        elog!("error profile-dir profile={profile}");
+        return Err("profile directory");
     }
     let settings = RequestContextSettings {
         cache_path: CefString::from(cache.to_string_lossy().as_ref()),
         ..Default::default()
     };
-    let context = request_context_create_context(Some(&settings), None)?;
-    elog!(
-        "profile context profile={profile} cache={}",
-        cache.display()
-    );
+    let context = request_context_create_context(Some(&settings), None).ok_or("request context")?;
+    elog!("profile context profile={profile}");
     with(|s| s.contexts.insert(profile, context.clone()));
-    Some(context)
+    Ok(context)
 }
 
 /// Makes one content view visible in its window and hides the others. The previous view stays
 /// alive. Sidebar views are not affected.
 fn show(view: ViewId) {
     let plan = with(|s| {
-        let kind = s.views.get(&view)?.kind;
-        if kind != ViewKind::Content {
+        let entry = s.views.get(&view)?;
+        if entry.kind != ViewKind::Content {
             return None;
         }
-        let window = s.views.get(&view)?.window;
-        let entry = s.windows.get(&window)?;
-        let siblings: Vec<(ViewId, BrowserView)> = entry
+        let window = entry.window;
+        let siblings: Vec<(ViewId, BrowserView)> = s
+            .windows
+            .get(&window)?
             .views
             .iter()
             .filter_map(|id| {
@@ -428,34 +440,43 @@ fn log_layout(window: WindowId) {
     }
 }
 
-/// `on_after_created`: the browser exists. Binds it to its view and flushes queued commands.
+/// `on_after_created`: the browser exists. Binds it to its view and reports `Created`. If the window
+/// is closing, the browser is closed at once and nothing is reported.
 pub(crate) fn browser_created(view: ViewId, browser: Browser) {
     let Some(shared) = shared() else { return };
     let browser_id = browser.identifier();
     let bound = with(|s| {
         let entry = s.views.get_mut(&view)?;
         entry.browser = Some(browser.clone());
-        Some((entry.kind, std::mem::take(&mut entry.pending)))
+        Some((entry.kind, entry.cancelled))
     });
-    let Some((kind, pending)) = bound else {
+    let Some((kind, cancelled)) = bound else {
         elog!("error browser_created view={view} reason=unknown-view");
+        close_browser(&browser, false);
         return;
     };
+    if cancelled || quitting() {
+        elog!("browser cancelled view={view}");
+        close_browser(&browser, false);
+        return;
+    }
     shared.registry.bind_browser(browser_id, view, kind);
-    let window_number = crate::macos::window_number(&browser)
+    shared.live[Shared::live_index(kind)].fetch_add(1, Ordering::SeqCst);
+    with(|s| {
+        if let Some(entry) = s.views.get_mut(&view) {
+            entry.counted = true;
+        }
+    });
+    let native = crate::macos::window_number(&browser)
         .map(|n| n.to_string())
         .unwrap_or_else(|| "none".into());
-    elog!(
-        "browser created view={view} kind={kind:?} browser={browser_id} native_window={window_number}"
-    );
+    elog!("browser created view={view} kind={kind:?} browser={browser_id} native_window={native}");
     shared.emit(EngineEvent::Created { view });
-    for command in pending {
-        execute(command);
-    }
+    post_to_ui(Box::new(pump));
 }
 
-/// `on_before_close`: the browser is gone. Removes the view, reports `Closed`, and closes the
-/// window when it was the last view.
+/// `on_before_close`: the browser is gone. Removes the view from the layout and reports `Closed`,
+/// unless the app is quitting. Closes the window when it was the last view.
 pub(crate) fn browser_closed(view: ViewId) {
     let Some(shared) = shared() else { return };
     let removed = with(|s| {
@@ -469,20 +490,24 @@ pub(crate) fn browser_closed(view: ViewId) {
         };
         Some((entry, root, empty))
     });
-    let Some((entry, root, empty)) = removed else {
-        return;
-    };
+    let Some((entry, root, empty)) = removed else { return };
     if let Some(browser) = &entry.browser {
         shared.registry.unbind_browser(browser.identifier());
     }
+    if entry.counted {
+        shared.live[Shared::live_index(entry.kind)].fetch_sub(1, Ordering::SeqCst);
+    }
     shared.registry.remove_view(view);
-    shared.emit(EngineEvent::Closed { view });
-    elog!("view closed view={view} window_empty={empty}");
+    let quitting = quitting();
+    if !quitting {
+        shared.emit(EngineEvent::Closed { view });
+    }
+    elog!("view closed view={view} window_empty={empty} quitting={quitting}");
 
     // Detach and close outside the callback, so CEF finishes this close first.
     let window_id = entry.window;
     let browser_view = entry.view;
-    let _ = post_to_ui(Box::new(move || {
+    post_to_ui(Box::new(move || {
         if let Some(root) = root {
             let mut handle = View::from(&browser_view);
             root.remove_child_view(Some(&mut handle));
@@ -493,6 +518,20 @@ pub(crate) fn browser_closed(view: ViewId) {
     }));
 }
 
+/// `on_render_process_terminated`: the renderer is gone. Report it, and close the browser so its
+/// view leaves the layout. A crashed sidebar is not left behind next to its replacement.
+pub(crate) fn browser_crashed(view: ViewId) {
+    let Some(shared) = shared() else { return };
+    let browser = with(|s| s.views.get(&view).and_then(|entry| entry.browser.clone()));
+    if !quitting() {
+        shared.emit(EngineEvent::Crashed { view });
+    }
+    match browser {
+        Some(browser) => close_browser(&browser, true),
+        None => elog!("crash without browser view={view}"),
+    }
+}
+
 /// Closes the window's native window, if it still exists.
 fn close_window(window: WindowId) {
     let handle = with(|s| s.windows.get(&window).and_then(|w| w.window.clone()));
@@ -501,9 +540,19 @@ fn close_window(window: WindowId) {
     }
 }
 
-/// `WindowDelegate::can_close`: asks every browser in the window to close. The window closes
-/// when all of them accept.
+/// `WindowDelegate::can_close`, called before the window closes. The first call for a window starts
+/// its close: `WindowClosing` goes out first, the engine enters the quitting state, and views still
+/// being created are cancelled. Then every browser is asked to close. The window closes when all of
+/// them accept.
 pub(crate) fn can_close_window(window: WindowId) -> bool {
+    let Some(shared) = shared() else { return true };
+    let first = with(|s| s.closing.insert(window));
+    if first {
+        shared.quitting.store(true, Ordering::SeqCst);
+        shared.emit(EngineEvent::WindowClosing { window });
+        elog!("window closing window={window}");
+        cancel_pending(window, &shared);
+    }
     let browsers: Vec<Browser> = with(|s| {
         let Some(entry) = s.windows.get(&window) else {
             return Vec::new();
@@ -523,10 +572,54 @@ pub(crate) fn can_close_window(window: WindowId) -> bool {
     allowed
 }
 
+/// Cancels creation of a closing window's views. Queued creations are removed and reported as
+/// `CreateFailed`, along with their queued commands. A view whose browser does not exist yet is
+/// marked, and its browser is closed as soon as it appears.
+fn cancel_pending(window: WindowId, shared: &Shared) {
+    let failed = with(|s| {
+        for entry in s.views.values_mut() {
+            if entry.window == window && entry.browser.is_none() {
+                entry.cancelled = true;
+            }
+        }
+        let queued: Vec<Queued> = s.queue.drain(..).collect();
+        let failed: Vec<ViewId> = queued
+            .iter()
+            .filter_map(|item| match &item.command {
+                EngineCommand::CreateView { view, window: w, .. } if *w == window => Some(*view),
+                _ => None,
+            })
+            .collect();
+        s.queue = queued
+            .into_iter()
+            .filter(|item| command_view(&item.command).is_none_or(|v| !failed.contains(&v)))
+            .collect();
+        failed
+    });
+    for view in failed {
+        elog!("cancelled pending view={view} window={window}");
+        shared.emit(EngineEvent::CreateFailed { view });
+    }
+}
+
+fn command_view(command: &EngineCommand) -> Option<ViewId> {
+    match command {
+        EngineCommand::CreateView { view, .. }
+        | EngineCommand::Show { view }
+        | EngineCommand::Load { view, .. }
+        | EngineCommand::Reload { view }
+        | EngineCommand::Back { view }
+        | EngineCommand::Forward { view }
+        | EngineCommand::Close { view } => Some(*view),
+        EngineCommand::CreateWindow { .. } => None,
+    }
+}
+
 /// `WindowDelegate::on_window_destroyed`. Quits the message loop after the last window.
 pub(crate) fn window_destroyed(window: WindowId) {
     let remaining = with(|s| {
         s.windows.remove(&window);
+        s.closing.remove(&window);
         s.windows.len()
     });
     if let Some(shared) = shared() {
@@ -540,12 +633,7 @@ pub(crate) fn window_destroyed(window: WindowId) {
 
 /// Closes every window, or ends the loop if there are none. UI thread.
 pub(crate) fn close_all_windows() {
-    let windows: Vec<Window> = with(|s| {
-        s.windows
-            .values()
-            .filter_map(|w| w.window.clone())
-            .collect()
-    });
+    let windows: Vec<Window> = with(|s| s.windows.values().filter_map(|w| w.window.clone()).collect());
     if windows.is_empty() {
         quit_message_loop();
         return;
@@ -555,25 +643,11 @@ pub(crate) fn close_all_windows() {
     }
 }
 
-/// A trusted left click at (x, y) in the view. CEF treats it as a user gesture, which a page needs
-/// before `window.open` is allowed. Used by the harness. UI thread.
-pub(crate) fn click(view: ViewId, x: i32, y: i32) {
-    let browser = with(|s| s.views.get(&view).and_then(|entry| entry.browser.clone()));
-    let Some(host) = browser.and_then(|b| b.host()) else {
-        elog!("dropped click view={view} reason=browser-not-created");
-        return;
-    };
-    let event = MouseEvent { x, y, modifiers: 0 };
-    host.send_mouse_move_event(Some(&event), 0);
-    host.send_mouse_click_event(Some(&event), MouseButtonType::LEFT, 0, 1);
-    host.send_mouse_click_event(Some(&event), MouseButtonType::LEFT, 1, 1);
-}
-
 /// Sends `script` to the view's main frame. UI thread.
 pub(crate) fn push_script(view: ViewId, script: String) {
     let browser = with(|s| s.views.get(&view).and_then(|entry| entry.browser.clone()));
     let Some(browser) = browser else {
-        elog!("dropped push view={view} reason=browser-not-created");
+        elog!("dropped push view={view} reason=no-browser");
         return;
     };
     if let Some(frame) = browser.main_frame() {
@@ -583,4 +657,19 @@ pub(crate) fn push_script(view: ViewId, script: String) {
             0,
         );
     }
+}
+
+/// A trusted left click at (x, y) in the view. CEF treats it as a user gesture, which a page needs
+/// before `window.open` is allowed. Test builds only. UI thread.
+#[cfg(any(debug_assertions, feature = "dev-tools"))]
+pub(crate) fn click(view: ViewId, x: i32, y: i32) {
+    let browser = with(|s| s.views.get(&view).and_then(|entry| entry.browser.clone()));
+    let Some(host) = browser.and_then(|b| b.host()) else {
+        elog!("dropped click view={view} reason=no-browser");
+        return;
+    };
+    let event = MouseEvent { x, y, modifiers: 0 };
+    host.send_mouse_move_event(Some(&event), 0);
+    host.send_mouse_click_event(Some(&event), MouseButtonType::LEFT, 0, 1);
+    host.send_mouse_click_event(Some(&event), MouseButtonType::LEFT, 1, 1);
 }

@@ -12,6 +12,7 @@ use yaac_api::{
     Snapshot,
 };
 use yaac_cef::CefEngine;
+use yaac_engine::ViewKind;
 use yaac_core::{CoreHandle, Principal};
 use yaac_model::{ContainerKind, NodeId, NodeKind, ViewId};
 
@@ -111,7 +112,11 @@ pub async fn persist_write(
     sidebar: Arc<Mutex<Option<ViewId>>>,
     engine: Arc<CefEngine>,
 ) {
-    let result = tokio::time::timeout(Duration::from_secs(30), write(core, &sidebar)).await;
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        wait_ready(&engine).await?;
+        write(core, &sidebar).await
+    })
+    .await;
     finish(
         "write",
         result.map_err(|_| "timed out".to_string()).and_then(|r| r),
@@ -124,12 +129,38 @@ pub async fn persist_verify(
     sidebar: Arc<Mutex<Option<ViewId>>>,
     engine: Arc<CefEngine>,
 ) {
-    let result = tokio::time::timeout(Duration::from_secs(30), verify(core, &sidebar)).await;
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        wait_ready(&engine).await?;
+        verify(core, &sidebar).await
+    })
+    .await;
     finish(
         "verify",
         result.map_err(|_| "timed out".to_string()).and_then(|r| r),
         &engine,
     );
+}
+
+/// The check is only meaningful once the real stack is up: one sidebar and one content view are
+/// live in the engine, and the sidebar page has had an RPC answered through the `app://ui` scheme
+/// (attribution by browser id and the RPC bridge both ran). Waits up to 20 s.
+async fn wait_ready(engine: &CefEngine) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let sidebars = engine.view_count(ViewKind::Sidebar);
+        let contents = engine.view_count(ViewKind::Content);
+        let answered = engine.rpc_answered();
+        if sidebars == 1 && contents == 1 && answered >= 1 {
+            println!("SELFTEST ready sidebar=1 content=1 rpc_answered={answered}");
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "not ready: sidebar={sidebars} content={contents} rpc_answered={answered}"
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 fn finish(stage: &str, result: Result<String, String>, engine: &CefEngine) {
