@@ -89,46 +89,71 @@ if [ "$os" = Linux ]; then
     fi
 fi
 
-# PIDs of this run's processes: the browser, its zygotes, renderers and GPU process. They run the
-# same executable and inherit this run's HOME. Linux matches the exact executable path, the owner
-# uid and HOME in the environment, so another instance (a dev run, a daily browser) is never
-# matched. macOS uses pgrep on the bundle path for this user.
+# Ticks (1/100 s) since boot, now. A stage records it before it starts a process.
+now_ticks() { awk '{ print int($1 * 100) }' /proc/uptime; }
+
+# Start time of a process, in ticks since boot (field 22 of /proc/PID/stat).
+start_ticks() { sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | awk '{ print $20 }'; }
+
+# This run's HOME in the process environment. Chromium overwrites the environment area of its
+# processes on Linux (observed on the browser process too), so this is only a first test.
+ours() { tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | grep -qxF "HOME=$HOME"; }
+
+# PIDs of this bundle's processes owned by this user. The browser, zygotes, renderers and GPU
+# process run the same executable. Linux matches the exact executable path and the owner uid, and
+# counts a process whose environment has this run's HOME, or, when SINCE (ticks) is given, one
+# that started at or after SINCE. A process from before the stage (another instance) is not counted
+# by start time. macOS: pgrep for this user on the bundle path.
 app_pids() {
+    since=${1:-}
     if [ "$os" = Linux ]; then
         for d in /proc/[0-9]*; do
             [ -O "$d" ] || continue
             [ "$(readlink "$d/exe" 2>/dev/null)" = "$app_real" ] || continue
-            tr '\0' '\n' < "$d/environ" 2>/dev/null | grep -qx "HOME=$HOME" || continue
-            echo "${d#/proc/}"
+            p=${d#/proc/}
+            if ours "$p"; then
+                echo "$p"
+            elif [ -n "$since" ] && [ "$(start_ticks "$p")" -ge "$since" ] 2>/dev/null; then
+                echo "$p"
+            fi
         done
     else
         pgrep -u "$(id -u)" -f -- "$app" 2>/dev/null
     fi
 }
 
+# Only processes that carry this run's HOME are killed (Linux). Others are reported and left alone.
+killable() { [ "$os" != Linux ] || ours "$1"; }
+
 # A run must not start while a process of this bundle with this HOME is still alive: its leftovers
-# would be counted as this run's and killed.
+# would be counted as this run's.
 if [ -n "$(app_pids)" ]; then
     echo "run-harnesses: processes of this bundle with this HOME are already running:" >&2
     app_pids >&2
     exit 2
 fi
 
+# Ticks at the start of the current stage (set by run() and the persistence checks).
+stage_since=0
+
 # No process of this bundle may outlive a stage: zygotes and renderers can exit a moment after the
-# browser. Wait up to 10 s, then fail and kill exactly the processes found.
+# browser. Wait up to 10 s, then fail. Kill only the processes that carry this run's HOME.
 leftover() {
     i=0
-    while [ -n "$(app_pids)" ] && [ "$i" -lt 10 ]; do sleep 1; i=$((i + 1)); done
-    pids=$(app_pids)
+    while [ -n "$(app_pids "$stage_since")" ] && [ "$i" -lt 10 ]; do sleep 1; i=$((i + 1)); done
+    pids=$(app_pids "$stage_since")
     if [ -n "$pids" ]; then
         echo "FAIL leftover processes after $1: $(echo $pids)"
         fail=1
-        for p in $pids; do kill -9 "$p" 2>/dev/null; done
+        for p in $pids; do
+            if killable "$p"; then kill -9 "$p" 2>/dev/null; fi
+        done
     fi
 }
 
 run() { # name, expected-exit-zero, args...
     name=$1; want_zero=$2; shift 2
+    stage_since=$(now_ticks)
     timeout 300 "$app" "$@" $ozone_arg >"$log/$name.log" 2>&1
     code=$?
     result=$(grep -E '^HARNESS result=' "$log/$name.log" | tail -1)
@@ -147,6 +172,7 @@ for h in rpc quit tab engine; do run "$h-harness" yes "--$h-harness"; done
 YAAC_HARNESS_FAIL_AFTER_CLOSE=1 run "harness-self-test" no --engine-harness
 
 data=$(mktemp -d "${TMPDIR:-/tmp}/yaac-persist.XXXXXX")
+stage_since=$(now_ticks)
 YAAC_DATA_DIR=$data timeout 90 "$app" --persist-write $ozone_arg >"$log/persist-write.log" 2>&1 && \
 YAAC_DATA_DIR=$data timeout 90 "$app" --persist-verify $ozone_arg >"$log/persist-verify.log" 2>&1
 if [ $? -eq 0 ]; then echo "ok   persist write+verify ($(grep SELFTEST "$log/persist-verify.log" | tail -1))"; else echo "FAIL persist; logs in $log"; fail=1; fi
