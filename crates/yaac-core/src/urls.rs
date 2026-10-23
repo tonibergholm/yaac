@@ -1,6 +1,6 @@
 //! Checks on the URLs a caller asks the core to load.
 
-use crate::error::{bad_request, forbidden};
+use crate::error::bad_request;
 use yaac_api::ApiError;
 
 pub(crate) const NEW_TAB_URL: &str = "about:blank";
@@ -33,7 +33,7 @@ pub(crate) fn check(url: &str, allow_app: bool) -> Result<(), ApiError> {
         return if allow_app {
             Ok(())
         } else {
-            Err(forbidden("app://ui pages are reserved for the system"))
+            Err(bad_request("app://ui pages are reserved for the system"))
         };
     }
     Err(bad_request(
@@ -80,7 +80,7 @@ mod tests {
     fn app_ui_urls_are_reserved_for_the_system() {
         assert_eq!(
             check(SIDEBAR_URL, false).unwrap_err().code,
-            ErrorCode::Forbidden
+            ErrorCode::BadRequest
         );
         assert!(check(SIDEBAR_URL, true).is_ok());
     }
