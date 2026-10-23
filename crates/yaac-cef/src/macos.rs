@@ -4,7 +4,10 @@
 
 use crate::engine;
 use cef::application_mac::{CefAppProtocol, CrAppControlProtocol, CrAppProtocol};
-use cef::{CefString, CommandLine, args::Args, library_loader::LibraryLoader, sandbox::Sandbox};
+use cef::{
+    CefString, CommandLine, ImplCommandLine, args::Args, library_loader::LibraryLoader,
+    sandbox::Sandbox,
+};
 use objc2::{
     ClassType, DefinedClass, MainThreadMarker, define_class, extern_methods,
     runtime::{AnyObject, Bool, NSObjectProtocol},
