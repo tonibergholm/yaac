@@ -88,12 +88,16 @@ pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// `$HOME` or `$TMPDIR`, whichever the path lies below. Symlinks are checked below that base only:
-/// the system's own links above it (on macOS `/var` is a link) are not the user's to control.
+/// `$HOME`, `$TMPDIR` or the system temp directory, whichever the path lies below. The temp
+/// directory is read from `std::env::temp_dir`, which falls back to `/tmp` when `$TMPDIR` is unset
+/// (the usual case on Linux). Symlinks are checked below that base only: the system's own links
+/// above it (on macOS `/var` is a link) are not the user's to control.
 fn private_base(path: &Path) -> Option<PathBuf> {
-    ["HOME", "TMPDIR"]
+    let from_env = ["HOME", "TMPDIR"]
         .iter()
-        .filter_map(|key| std::env::var_os(key).map(PathBuf::from))
+        .filter_map(|key| std::env::var_os(key).map(PathBuf::from));
+    from_env
+        .chain(std::iter::once(std::env::temp_dir()))
         .filter(|base| path.starts_with(base))
         .max_by_key(|base| base.as_os_str().len())
 }
