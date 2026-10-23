@@ -67,6 +67,8 @@ struct State {
     closing: HashSet<WindowId>,
     /// Windows whose close attempt committed.
     committed: HashSet<WindowId>,
+    /// Browsers whose tab close was requested through `Close{view}`.
+    tab_closing: HashSet<i32>,
     /// Close attempts in progress, with the `Closed` events they hold back.
     attempts: HashMap<WindowId, Vec<ViewId>>,
 }
@@ -90,6 +92,11 @@ fn profile_delayed() -> bool {
 fn profile_delayed() -> bool {
     false
 }
+
+/// Window close attempts entered (`can_close_window`). Read by the harness to show that closing a tab
+/// did not start one.
+pub(crate) static CLOSE_ATTEMPTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());
@@ -204,9 +211,7 @@ fn run(command: EngineCommand, attempts: u32) -> Option<Queued> {
             }
         }
         EngineCommand::Show { view } => show(view),
-        EngineCommand::Close { view } => {
-            with_browser(view, |browser| close_browser(browser, false))
-        }
+        EngineCommand::Close { view } => close_tab(view),
         EngineCommand::Load { view, url } => with_browser(view, |browser| {
             if let Some(frame) = browser.main_frame() {
                 frame.load_url(Some(&CefString::from(url.as_str())));
@@ -241,6 +246,47 @@ fn with_browser(view: ViewId, op: impl FnOnce(&Browser)) {
         Some(browser) => op(&browser),
         None => elog!("dropped command view={view} reason=no-browser"),
     }
+}
+
+/// Closes one tab. The browser is marked first, so its `on_do_close` (which runs after its unload
+/// handlers) detaches the tab's `BrowserView` instead of notifying the window. See `tab_do_close`.
+fn close_tab(view: ViewId) {
+    let browser = with(|s| s.views.get(&view).and_then(|entry| entry.browser.clone()));
+    match browser {
+        Some(browser) => {
+            with(|s| s.tab_closing.insert(browser.identifier()));
+            close_browser(&browser, false);
+        }
+        None => elog!("dropped close view={view} reason=no-browser"),
+    }
+}
+
+/// `on_do_close` for a browser. A tab closed by `Close{view}` must not notify its top-level window
+/// (CEF Views would then ask the window to close). For that browser the close is completed here by
+/// the tear-down of its view, as the CEF documentation requires when returning true: the view leaves
+/// the window, and the browser closes and reports `on_before_close`. Returns true (handled) for such
+/// a tab, false (the default) otherwise, so a real window close still reaches the window.
+pub(crate) fn tab_do_close(browser: i32) -> bool {
+    let requested = with(|s| s.tab_closing.remove(&browser));
+    if !requested {
+        return false;
+    }
+    let Some(shared) = shared() else { return true };
+    let Some((view, _)) = shared.registry.browser(browser) else {
+        return true;
+    };
+    post_to_ui(Box::new(move || {
+        let target = with(|s| {
+            let entry = s.views.get(&view)?;
+            let root = s.windows.get(&entry.window)?.root.clone();
+            Some((root, entry.view.clone()))
+        });
+        if let Some((root, browser_view)) = target {
+            let mut handle = View::from(&browser_view);
+            root.remove_child_view(Some(&mut handle));
+        }
+    }));
+    true
 }
 
 /// Closes a browser. `force` skips the page's own close handling, used for a crashed renderer.
@@ -615,6 +661,7 @@ fn close_window(window: WindowId) {
 ///
 /// Once committed, the window closes without asking again.
 pub(crate) fn can_close_window(window: WindowId) -> bool {
+    CLOSE_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
     let Some(shared) = shared() else { return true };
     if with(|s| s.committed.contains(&window)) {
         return true;

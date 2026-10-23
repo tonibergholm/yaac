@@ -131,6 +131,11 @@ wrap_life_span_handler! {
             ui::browser_closed(self.view);
         }
 
+        fn do_close(&self, browser: Option<&mut Browser>) -> i32 {
+            let id = browser.map(|b| b.identifier());
+            i32::from(id.is_some_and(ui::tab_do_close))
+        }
+
         fn on_before_popup(
             &self,
             _browser: Option<&mut Browser>,

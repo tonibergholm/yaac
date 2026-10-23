@@ -337,6 +337,11 @@ pub mod test_hooks {
         crate::log::dev_log!("test hook: cancel_next_unloads({n})");
     }
 
+    /// Window close attempts entered so far. A tab close must not add to this.
+    pub fn window_close_attempts() -> u64 {
+        crate::ui::CLOSE_ATTEMPTS.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Makes new profiles look not ready for `delay` after the call, so a `CreateView` stays pending.
     pub fn delay_profile_readiness(delay: Duration) {
         if let Ok(mut slot) = crate::ui::PROFILE_DELAY.lock() {
