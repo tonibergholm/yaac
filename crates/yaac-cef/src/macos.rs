@@ -43,6 +43,9 @@ pub(crate) fn fit_window(_window: &Window, _width: i32, _height: i32) {}
 /// macOS takes no platform switch: the default platform is the right one.
 pub(crate) fn add_platform_switches(_command_line: &mut CommandLine) {}
 
+/// macOS uses the Keychain by default: nothing to request.
+pub(crate) fn add_secure_store(_command_line: &mut CommandLine) {}
+
 /// The Keychain mock. Debug builds with `YAAC_MOCK_KEYCHAIN=1` only.
 pub(crate) fn add_mock_keychain(command_line: &mut CommandLine) {
     command_line.append_switch(Some(&CefString::from("use-mock-keychain")));

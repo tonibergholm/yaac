@@ -57,6 +57,8 @@ wrap_app! {
             if mock_keychain_allowed() {
                 eprintln!("yaac: WARNING mock keychain in use; profile data is not protected");
                 crate::os::add_mock_keychain(command_line);
+            } else {
+                crate::os::add_secure_store(command_line);
             }
             crate::os::add_platform_switches(command_line);
             command_line.append_switch_with_value(

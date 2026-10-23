@@ -64,6 +64,20 @@ pub(crate) fn add_mock_keychain(command_line: &mut CommandLine) {
     );
 }
 
+/// The store that encrypts Chromium's profile data (cookies, saved logins). On a desktop Chromium
+/// does not recognise (Hyprland), the default falls back to the basic store, whose fixed key leaves
+/// the data effectively unencrypted at rest. So the secret service is requested explicitly, as the
+/// Omarchy browsers do. If no secret service is running, Chromium may still fall back; the cookie
+/// prefix check (`scripts/cookie-store-check.sh`: `v11` is the keyring, `v10` the fixed key) shows
+/// which one a build actually uses.
+pub(crate) fn add_secure_store(command_line: &mut CommandLine) {
+    eprintln!("yaac: password store gnome-libsecret");
+    command_line.append_switch_with_value(
+        Some(&CefString::from("password-store")),
+        Some(&CefString::from("gnome-libsecret")),
+    );
+}
+
 /// `wayland` when the Wayland socket is reachable, `x11` otherwise (XWayland under a Wayland
 /// session, or a real X server). `WAYLAND_DISPLAY` is either a socket name, relative to
 /// `XDG_RUNTIME_DIR`, or an absolute path. `exists` is injected so the rule can be tested.
