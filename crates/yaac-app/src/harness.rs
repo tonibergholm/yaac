@@ -506,10 +506,10 @@ impl Harness {
     async fn title_storm(&mut self, second: ViewId) -> Result<(), String> {
         let rss_before = rss_kib();
         self.mark();
-        let storm = data_url(&format!(
-            "<title>begin</title><script>for (let i = 0; i < 100000; i++) {{ document.title = 't' + i; }}\
-             document.title = 'storm-' + 'x'.repeat(2000);</script>"
-        ));
+        let storm = data_url(
+            "<title>begin</title><script>for (let i = 0; i < 100000; i++) { document.title = 't' + i; }\
+             document.title = 'storm-' + 'x'.repeat(2000);</script>",
+        );
         self.send(EngineCommand::Load {
             view: second,
             url: storm,

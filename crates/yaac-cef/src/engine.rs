@@ -109,7 +109,7 @@ impl Shared {
         if self.flush_scheduled.swap(true, Ordering::SeqCst) {
             return;
         }
-        if !post_after(Box::new(|| flush_global()), FLUSH_MS) {
+        if !post_after(Box::new(flush_global), FLUSH_MS) {
             // CEF is not running (or is shutting down): deliver now, do not wait for a timer.
             self.flush();
         }

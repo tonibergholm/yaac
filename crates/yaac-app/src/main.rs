@@ -133,11 +133,11 @@ fn main() -> ExitCode {
         eprintln!("yaac-app: {}: {error}", data_dir.display());
         return ExitCode::from(1);
     }
-    if mode == Mode::Shell {
-        if let Err(error) = paths.create_all() {
-            eprintln!("yaac-app: cannot create app directories: {error}");
-            return ExitCode::from(1);
-        }
+    if mode == Mode::Shell
+        && let Err(error) = paths.create_all()
+    {
+        eprintln!("yaac-app: cannot create app directories: {error}");
+        return ExitCode::from(1);
     }
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
