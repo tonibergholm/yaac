@@ -264,4 +264,21 @@ Before freezing the yaac tool schema, run these on Aside with the owner's approv
 
 Settled: CLI command tree, exit codes, the MCP tool list, transport (loopback TCP 21420), the daemon's Origin and Host checks, the snapshot format and sizes, the 16 KiB cap, and the REPL action surface on test pages.
 
-Not settled: approval and indicator behaviour, Deny rules for MCP calls, the kill switch, the audit log, and what the accidental agent run cost. These need the owner's approval for a Settings change, a window ID, or a check of Aside's usage history.
+Not settled: approval and indicator behaviour, the kill switch, the audit log, and what the accidental agent run cost. These need the owner's approval for a Settings change, a window ID, or a check of Aside's usage history.
+
+## 11. Deny-rule test (run 3, 2026-10-23)
+
+Setup: the owner added one rule in Settings > Agents > Tool permissions: Deny, tool `repl` (the Allow and Ask lists were empty; the rule is visible in a screenshot the owner supplied). No other setting was changed.
+
+Test, from the main session, using only a tab it opened and closed itself on https://example.com:
+
+- MCP: `tools/call` on `repl` through a stdio client of `aside mcp`. The call ran: `isError: false`, the snapshot of example.com came back, the tab was closed. VERIFIED.
+- CLI: `aside repl "<same code>"`. It ran and printed the snapshot (`ok`, 365 ms). VERIFIED.
+- `repl` return values are not printed; only `console.log` and `display` output reaches the client. A first attempt that used `return` showed an empty result and looked like a block. A control run with `console.log("hello")` printed `hello`, which ruled that out. VERIFIED.
+
+Result: with a Deny rule for `repl` present in Settings, `repl` called through `aside mcp` and `aside repl` still executed. VERIFIED. INFERRED: the Settings tool rules govern Aside's own agent runs, not calls made by an external MCP or CLI client. Not tested: whether the rule applies to `repl` inside an `aside exec` agent run (that would start a billable agent session), and whether a rule saved in a different form (for example one tied to the MCP server) would apply.
+
+Consequence for yaac: an external client path can sit outside the permission rules. Our core must enforce grants on the same path for the UI, the CLI and MCP (note 05 R3 to R5), with no unguarded route.
+
+Owner action: remove the Deny rule for `repl` if it is still set.
+
