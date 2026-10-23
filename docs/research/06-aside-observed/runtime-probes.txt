@@ -1,0 +1,57 @@
+Aside runtime probes, 2026-10-23 (VERIFIED: observed in this run)
+Commands run, all read-only. No tool calls to Aside's MCP or CLI were possible (CLI not installed).
+
+## Processes (ps, pid and command name only)
+13436  /Applications/Aside.app/Contents/MacOS/Aside           main browser process, user tonibergholm, started 10:07
+13450  "Aside Daemon" (aside-daemon binary, ppid 13436)       local service
+13445  Aside Helper --type=utility --utility-sub-type=network.mojom.NetworkService (ppid 13436)
+13481  aside-memory (child of 13450)                           memory helper (not investigated)
+
+## Listeners (lsof -nP -iTCP -sTCP:LISTEN, owner tonibergholm)
+Aside        13436  TCP 127.0.0.1:45103 (LISTEN)
+aside-daemon 13450  TCP 127.0.0.1:21420 (LISTEN)
+Unix socket: 13436 fd 5 -> $TMPDIR/at.studio.AsideBrowser.<random>/SingletonSocket (browser singleton)
+
+## Daemon TCP peers
+127.0.0.1:50743, 50784, 50796, 50798, 50801, 50804, 50805 (7 accepted connections on 21420)
+Peer on the client side: pid 13445 (Aside Helper, NetworkService). No other client pid seen at this moment.
+Outbound: pid 13450 has one established TCP connection to a Cloudflare address on port 443.
+
+## Probes against 127.0.0.1:21420 (headers only, no body kept)
+GET /                              -> HTTP/1.1 200, content-type application/json, content-length 231
+GET / with Origin: https://example.com   -> HTTP/1.1 403, content-type application/json, content-length 68
+GET / with Host: evil.test         -> HTTP/1.1 403, content-type application/json, content-length 63
+
+## Probes against 127.0.0.1:45103
+GET /                              -> 403, text/html, 40 bytes
+GET /json/version                  -> 403, text/html, 40 bytes (no DevTools version JSON; not identified)
+
+## Public page HTML sizes (curl GET, following redirects; baseline, not Aside output)
+https://example.com/                                  577 bytes
+https://en.wikipedia.org/wiki/Web_browser             415391 bytes
+https://github.com/tonibergholm/yaac                  245228 bytes
+
+## Home directory layout (names, modes, sizes only; contents NOT read)
+~/.aside/                 directories: external-password-managers (700), logs (755), memory-runtimes (700), models (700),
+                          password-manager (755), runtime (755), runtime-computer-use (700), u (755)
+                          files: accounts.json (600), mcp-credential-cleanup.json (600), memory-catalog.json (600)
+~/.aside/logs/            daemon-2026-10-23.log (600, 17662 bytes)
+~/.aside/runtime/         bin (755; entries: node, npm, npx, pdf*, pip*, python*, rg), native, node, python, tmp,
+                          env.sh (644), manifest.txt (644), version.txt (644), .npmrc, prepare-python.py, openssl.cnf
+~/.aside/u/0/            AGENTS.md, SOUL.md, agents/, cache/, credentials.json (600), memory/, sessions/,
+                          settings.json (600), skills/, state.db (+ -shm, -wal), .project-v6-external-storage-complete
+~/.aside/bin, ~/.aside/native, ~/.aside/cli: do not exist.
+~/.local/bin/aside, /usr/local/bin/aside, /opt/homebrew/bin/aside: do not exist. `which aside` prints nothing.
+
+## Socket and profile checks (names and modes only)
+$TMPDIR/at.studio.AsideBrowser.WsfJyH/   drwx------ (0700), contains SingletonSocket srwxr-xr-x (0755)  <- live, fd 5 of pid 13436
+$TMPDIR/at.studio.AsideBrowser.UVHCZD/   drwx------ (0700), contains SingletonSocket srwxr-xr-x (0755)  <- not investigated
+Daemon fd 20 (pid 13450): unix socket to unnamed peer 0xfd1d444e5e8c5470; peer not found in lsof -U.
+~/Library/Application Support/Aside/: no DevToolsActivePort at top level (find -maxdepth 1). Profile directory "Default" exists (not read).
+ps for 13436 shows the executable path only, with no --remote-debugging-port and no --user-data-dir argument.
+Shell startup files checked for "aside" (case-insensitive, unfiltered, 0 matches): ~/.zshrc, ~/.zprofile, /etc/zshrc,
+/etc/zprofile, /etc/paths.d/*.
+Chromium keys in framework Info.plist: none (only CFBundleVersion and CFBundleShortVersionString).
+
+## Installed CLI
+Not present. Not installed in this run (the install script was not run, by design).
