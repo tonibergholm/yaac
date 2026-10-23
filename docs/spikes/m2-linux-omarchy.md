@@ -128,7 +128,8 @@ M2: the walking skeleton on Linux (Omarchy, Hyprland, Wayland). The Linux paths,
 
 - **Q4 fix:** `--type=<unknown>` aborts in CEF. A fix must not reject sandboxed children (see Q4).
 - **Privacy, release store:** the explicit `gnome-libsecret` is in (coordinator). Still needed: the cookie check on a release bundle (`cookie-store-check.sh`, expect `v11`), run by the owner.
-- **Headless without `ui/dist`:** not repeated at this head.
+- **Final checks at `b9af4ff` (Omarchy, 17:45):** fmt, layering, clippy `-D warnings` (debug and release), 174 tests pass, headless harness suite passes with and without `ui/dist`. macOS at `fad1716`: suite all `ok`, self-test exit 1, `clippy --release -D warnings` passes.
+- **Import regression caught:** the Ozone move (`c0068f0`) dropped a Linux-only import; the macOS build does not compile that module, so only the Linux check caught it (fixed in `b9af4ff`). Lesson: run the Linux `cargo check` after moving code out of a `cfg` module.
 - **Live check:** `live-session-check.sh` has only run its dry run and its refusal outside a session.
 - **Package build:** the release `makepkg` build was not run (RAM).
 
