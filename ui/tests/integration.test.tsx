@@ -99,3 +99,27 @@ describe('folders and Spaces with MockBridge', () => {
     expect(screen.getByRole('treeitem', { name: /^Example Domain/ }).getAttribute('aria-selected')).toBe('true');
   });
 });
+
+describe('keyboard move into a collapsed folder', () => {
+  it('expands the folder, keeps the moved row visible, and keeps focus on it', async () => {
+    await mountMock();
+    // Put Mail after Work, so Mail follows the folder.
+    fireEvent.keyDown(screen.getByRole('treeitem', { name: /^Mail/ }), { key: 'ArrowDown', altKey: true, shiftKey: true });
+    await waitFor(() => {
+      const work = screen.getByRole('treeitem', { name: /^Work/ });
+      const mail = screen.getByRole('treeitem', { name: /^Mail/ });
+      expect(work.compareDocumentPosition(mail) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    // Collapse Work, then move Mail into it.
+    fireEvent.click(screen.getByText('Work', { selector: '.title' }));
+    await waitFor(() => expect(screen.getByRole('treeitem', { name: /^Work/ }).getAttribute('aria-expanded')).toBe('false'));
+    const mail = screen.getByRole('treeitem', { name: /^Mail/ });
+    mail.focus();
+    fireEvent.keyDown(mail, { key: 'ArrowRight', altKey: true, shiftKey: true });
+
+    await waitFor(() => expect(screen.getByRole('treeitem', { name: /^Work/ }).getAttribute('aria-expanded')).toBe('true'));
+    await waitFor(() => expect(screen.getByRole('treeitem', { name: /^Mail/ }).getAttribute('aria-level')).toBe('2'));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('treeitem', { name: /^Mail/ })));
+  });
+});

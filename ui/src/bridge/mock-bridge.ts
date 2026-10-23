@@ -6,6 +6,7 @@ import type {
   CoreEvent,
   ErrorCode,
   NodeId,
+  NodeKind,
   NodeView,
   Placement,
   Query,
@@ -106,8 +107,16 @@ export class MockBridge implements Bridge {
   private spaces: MockSpace[] = [];
   private readonly handlers = new Set<EventHandler>();
 
-  constructor() {
+  /** `split: true` adds a split with two tabs at the end of Pinned. Tests use it to exercise split rules. */
+  constructor(options: { split?: boolean } = {}) {
     this.seed();
+    if (options.split) {
+      const pinned = this.spaces[0]?.containers.pinned;
+      const split = newNode(this.id(), 'split', '', null, {
+        children: [newNode(this.id(), 'tab', 'Left', 'https://left.example/'), newNode(this.id(), 'tab', 'Right', 'https://right.example/')],
+      });
+      pinned?.push(split);
+    }
   }
 
   request(body: Body): Promise<ApiResult> {
@@ -149,20 +158,36 @@ export class MockBridge implements Bridge {
     switch (command.type) {
       case 'open_tab': {
         assertAllowedUrl(command.url);
-        const { list } = this.resolvePlacement(command.placement);
+        const { list } = this.resolvePlacement(command.placement, { id: null, kind: 'tab' });
         const node = newNode(this.id(), 'tab', '', command.url, { live: true });
         this.insert(list, node, command.placement.before);
         if (command.activate) this.selected = node.id;
         return { type: 'opened', node: node.id, rev: this.bump() };
       }
       case 'close_tab': {
-        const found = this.requireTab(command.node);
+        const found = this.find(command.node);
+        if (!found) fail('not_found', `node ${command.node} does not exist`);
         if (found.container === 'archive') return this.ack();
-        const [node] = found.list.splice(found.list.indexOf(found.node), 1);
-        if (!node) fail('internal', 'tab vanished during close');
-        node.live = false;
-        found.space.containers.archive.push(node);
-        if (this.selected === node.id) this.selected = this.firstTodayTab();
+        if (found.node.kind === 'folder') {
+          // As in the core: a folder with children is a conflict, an empty one is deleted.
+          if (found.node.children.length > 0) fail('conflict', 'folder not empty');
+          found.list.splice(found.list.indexOf(found.node), 1);
+          return this.ack(this.bump());
+        }
+        if (found.node.kind !== 'tab') fail('bad_request', 'only tabs and empty folders can be closed');
+        const index = found.list.indexOf(found.node);
+        const wasSelected = this.selected === found.node.id;
+        // The next sibling tab, else the previous one, else another tab of the Space, else a new blank tab.
+        const replacement = wasSelected ? this.neighbourTab(found.list, index) : null;
+        found.list.splice(index, 1);
+        found.node.live = false;
+        found.space.containers.archive.push(found.node);
+        if (wasSelected) {
+          const next = replacement ?? this.firstSpaceTab(found.space) ?? this.openBlankTab(found.space).id;
+          this.selected = next;
+          const nextNode = this.find(next)?.node;
+          if (nextNode) nextNode.live = true;
+        }
         return this.ack(this.bump());
       }
       case 'select_tab': {
@@ -180,16 +205,16 @@ export class MockBridge implements Bridge {
           fail('bad_request', 'a node cannot be placed before itself');
         }
         if (command.to.parent !== null && containsId(found.node, command.to.parent)) {
-          fail('bad_request', 'a node cannot be moved into itself or its descendants');
+          fail('conflict', 'a node cannot be moved into itself or its descendants');
         }
-        const target = this.resolvePlacement(command.to);
+        const target = this.resolvePlacement(command.to, { id: found.node.id, kind: found.node.kind });
         found.list.splice(found.list.indexOf(found.node), 1);
         this.insert(target.list, found.node, command.to.before);
         return this.ack(this.bump());
       }
       case 'create_folder': {
         const title = this.requireTitle(command.title);
-        const { list } = this.resolvePlacement(command.placement);
+        const { list } = this.resolvePlacement(command.placement, { id: null, kind: 'folder' });
         const folder = newNode(this.id(), 'folder', title, null);
         this.insert(list, folder, command.placement.before);
         return { type: 'opened', node: folder.id, rev: this.bump() };
@@ -304,7 +329,7 @@ export class MockBridge implements Bridge {
   }
 
   /** Resolves a placement to the sibling list it targets, validating space, container, parent and before. */
-  private resolvePlacement(placement: Placement): { list: NodeView[] } {
+  private resolvePlacement(placement: Placement, moving: { id: NodeId | null; kind: NodeKind }): { list: NodeView[] } {
     const space = this.spaces.find((s) => s.id === placement.space);
     if (!space) fail('not_found', `space ${placement.space} does not exist`);
     let list: NodeView[];
@@ -313,9 +338,17 @@ export class MockBridge implements Bridge {
     } else {
       const parent = this.find(placement.parent);
       if (!parent) fail('not_found', `parent ${placement.parent} does not exist`);
-      if (parent.node.kind !== 'folder') fail('bad_request', 'parent must be a folder');
+      if (parent.node.kind !== 'folder' && parent.node.kind !== 'split') {
+        fail('bad_request', 'parent must be a folder or a split');
+      }
       if (parent.space !== space || parent.container !== placement.container) {
         fail('bad_request', 'parent is not in the target container');
+      }
+      if (parent.node.kind === 'split') {
+        // A split holds two to four tabs and nothing else.
+        if (moving.kind !== 'tab') fail('bad_request', 'a split holds tabs only');
+        const isChild = parent.node.children.some((child) => child.id === moving.id);
+        if (!isChild && parent.node.children.length >= 4) fail('conflict', 'a split holds at most four tabs');
       }
       list = parent.node.children;
     }
@@ -337,7 +370,38 @@ export class MockBridge implements Bridge {
 
   private firstTodayTab(): NodeId | null {
     const space = this.spaces.find((s) => s.id === this.activeSpace);
-    return space?.containers.today.find((n) => n.kind === 'tab')?.id ?? null;
+    return space ? this.firstTabIn(space.containers.today) : null;
+  }
+
+  /** First tab in depth-first order, descending into folders and splits. */
+  private firstTabIn(list: NodeView[]): NodeId | null {
+    for (const node of list) {
+      if (node.kind === 'tab') return node.id;
+      const inner = this.firstTabIn(node.children);
+      if (inner) return inner;
+    }
+    return null;
+  }
+
+  /** Another tab of the Space: first in today, then first in pinned. */
+  private firstSpaceTab(space: MockSpace): NodeId | null {
+    return this.firstTabIn(space.containers.today) ?? this.firstTabIn(space.containers.pinned);
+  }
+
+  /** The next sibling tab, else the previous one, as the core chooses on close. */
+  private neighbourTab(list: NodeView[], index: number): NodeId | null {
+    const next = list[index + 1];
+    if (next?.kind === 'tab') return next.id;
+    const previous = list[index - 1];
+    if (previous?.kind === 'tab') return previous.id;
+    return null;
+  }
+
+  /** Opens a new blank tab at the end of today and returns it. */
+  private openBlankTab(space: MockSpace): NodeView {
+    const node = newNode(this.id(), 'tab', '', 'about:blank', { live: true });
+    space.containers.today.push(node);
+    return node;
   }
 
   private snapshot(): Snapshot {

@@ -1,9 +1,9 @@
 import type { ApiResult } from '../wire';
-import { BridgeError } from './types';
+import { ProtocolError } from './types';
 
 // Checks a reply from the host before the UI uses it. The types are generated from Rust, so this
-// only guards against a host that is out of step with the page. A failed check becomes a
-// `BridgeError`, which the caller handles like any other failed request.
+// only guards against a host that is out of step with the page. A failed check throws a
+// `ProtocolError`. The sidebar treats that as a permanent refusal, since retrying returns the same reply.
 
 type Obj = Record<string, unknown>;
 
@@ -81,7 +81,7 @@ function isResponseBody(value: unknown): boolean {
 /** Validates the `Response` envelope for request `expectedId` and returns its `ApiResult`. */
 export function parseApiResponse(value: unknown, expectedId: number): ApiResult {
   if (!isObj(value) || value.id !== expectedId) {
-    throw new BridgeError('rpc reply does not answer this request');
+    throw new ProtocolError('rpc reply does not answer this request');
   }
   const result = value.result;
   if (isObj(result)) {
@@ -90,5 +90,5 @@ export function parseApiResponse(value: unknown, expectedId: number): ApiResult 
       if (typeof result.error.message === 'string') return result as unknown as ApiResult;
     }
   }
-  throw new BridgeError('rpc reply is malformed');
+  throw new ProtocolError('rpc reply is malformed');
 }

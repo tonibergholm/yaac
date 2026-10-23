@@ -1,11 +1,11 @@
 export type AddressResult = { ok: true; url: string } | { ok: false; error: string };
 
+/** Cap on the final URL, after percent-encoding. */
 export const MAX_ADDRESS_LENGTH = 2048;
 
 const SCHEME = /^([a-z][a-z0-9+.-]*):/i;
 /** `host:port` with an optional path, query or fragment. Whitespace is rejected before this runs. */
 const HOST_PORT = /^([a-z0-9.-]+):(\d{1,5})(?:[/?#].*)?$/i;
-const IPV4 = /^\d{1,3}(?:\.\d{1,3}){3}$/;
 
 /** Schemes that can appear before a colon. A `word:number` input with one of these is a scheme, not a host. */
 const KNOWN_SCHEMES = new Set([
@@ -48,10 +48,66 @@ function hasControlOrSpace(text: string): boolean {
   return false;
 }
 
-/** Local hosts and IPv4 addresses default to http. Everything else defaults to https. */
+/** The host part of an address without a scheme: a bracketed IPv6 literal, or the text before any port or path. */
+function hostOf(raw: string): string {
+  const bracketed = /^\[[^\]]*\]/.exec(raw);
+  if (bracketed) return bracketed[0];
+  return (raw.split(/[/?#]/)[0] ?? raw).replace(/:\d*$/, '');
+}
+
+/** Parses an IPv6 literal (without brackets) into eight 16-bit groups, or null when it is not one. */
+function parseIpv6(text: string): number[] | null {
+  let s = text;
+  const embedded = /^(.*:)(\d{1,3}(?:\.\d{1,3}){3})$/.exec(s);
+  if (embedded) {
+    const parts = (embedded[2] ?? '').split('.').map(Number);
+    if (parts.some((part) => part > 255)) return null;
+    const high = ((parts[0] ?? 0) << 8) | (parts[1] ?? 0);
+    const low = ((parts[2] ?? 0) << 8) | (parts[3] ?? 0);
+    s = `${embedded[1] ?? ''}${high.toString(16)}:${low.toString(16)}`;
+  }
+  const halves = s.split('::');
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  let groups: string[];
+  if (halves.length === 2) {
+    const fill = 8 - head.length - tail.length;
+    if (fill < 1) return null;
+    groups = [...head, ...Array<string>(fill).fill('0'), ...tail];
+  } else {
+    groups = head;
+  }
+  if (groups.length !== 8) return null;
+  const numbers: number[] = [];
+  for (const group of groups) {
+    if (!/^[0-9a-f]{1,4}$/i.test(group)) return null;
+    numbers.push(parseInt(group, 16));
+  }
+  return numbers;
+}
+
+/** `::1` in any spelling, or an IPv4-mapped 127.x.x.x address. */
+function isLoopbackIpv6(text: string): boolean {
+  const n = parseIpv6(text);
+  if (!n) return false;
+  if (n.slice(0, 7).every((group) => group === 0) && n[7] === 1) return true;
+  return n.slice(0, 5).every((group) => group === 0) && n[5] === 0xffff && (n[6] ?? 0) >> 8 === 127;
+}
+
+function isLoopbackHost(host: string): boolean {
+  const lower = host.toLowerCase().replace(/\.$/, '');
+  if (lower === 'localhost' || lower.endsWith('.localhost')) return true;
+  if (lower.startsWith('[') && lower.endsWith(']')) return isLoopbackIpv6(lower.slice(1, -1));
+  return /^127(?:\.\d{1,3}){3}$/.test(lower);
+}
+
+/**
+ * Scheme for an address typed without one. IPv6 literals and loopback hosts (in any form) default
+ * to http. Every other host defaults to https.
+ */
 function defaultScheme(host: string): 'http://' | 'https://' {
-  const lower = host.toLowerCase();
-  return lower === 'localhost' || IPV4.test(lower) ? 'http://' : 'https://';
+  return host.startsWith('[') || isLoopbackHost(host) ? 'http://' : 'https://';
 }
 
 function parseWeb(candidate: string): AddressResult {
@@ -63,6 +119,10 @@ function parseWeb(candidate: string): AddressResult {
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return fail(ALLOWED_MESSAGE);
   if (parsed.hostname === '') return fail('That address has no host name.');
+  // The cap applies to the URL the browser will load, after percent-encoding.
+  if (parsed.href.length > MAX_ADDRESS_LENGTH) {
+    return fail(`Addresses are limited to ${MAX_ADDRESS_LENGTH} characters after encoding.`);
+  }
   return { ok: true, url: parsed.href };
 }
 
@@ -73,17 +133,13 @@ function parseWeb(candidate: string): AddressResult {
 export function normalizeAddress(input: string): AddressResult {
   const raw = input.trim();
   if (raw === '') return fail('Enter an address.');
-  if (raw.length > MAX_ADDRESS_LENGTH) {
-    return fail(`Addresses are limited to ${MAX_ADDRESS_LENGTH} characters.`);
-  }
   if (hasControlOrSpace(raw)) {
     return fail('Addresses cannot contain spaces. Search is not available yet.');
   }
 
   const hostPort = HOST_PORT.exec(raw);
   if (hostPort && !KNOWN_SCHEMES.has((hostPort[1] ?? '').toLowerCase())) {
-    const host = hostPort[1] ?? '';
-    return parseWeb(`${defaultScheme(host)}${raw}`);
+    return parseWeb(`${defaultScheme(hostPort[1] ?? '')}${raw}`);
   }
 
   const scheme = SCHEME.exec(raw)?.[1]?.toLowerCase();
@@ -95,6 +151,5 @@ export function normalizeAddress(input: string): AddressResult {
     return parseWeb(raw);
   }
 
-  const hostOnly = raw.split(/[/?#]/)[0] ?? raw;
-  return parseWeb(`${defaultScheme(hostOnly)}${raw}`);
+  return parseWeb(`${defaultScheme(hostOf(raw))}${raw}`);
 }

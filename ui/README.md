@@ -38,6 +38,7 @@ The page uses one of two bridges.
 - `src/state/store.ts` is a small observable store.
 - `src/model/` holds pure helpers for tree lookup, visible rows, drop placement, titles and the address allow-list.
 - `src/ui/` holds the Preact components. Titles and URLs render as text only.
+- `src/ui/drag.ts` holds the drag MIME type. It carries a random token generated at start-up, kept in memory only. A drag counts as internal only when its type list contains that exact type.
 - `sidebar.html`, `vite.config.ts` and `csp.mjs` are the entry page, the build config and the strict Content-Security-Policy. The CSP is injected into the built HTML only, because the dev server needs inline scripts and a websocket, which the policy blocks.
 
 ## Tests
@@ -61,7 +62,7 @@ Each move sends one `move_node` with an exact placement. Focus stays on the move
 |---|---|
 | Alt+Shift+Up or Alt+Shift+Down | Reorder among siblings |
 | Alt+Shift+Left | Move out of the folder, to just after it |
-| Alt+Shift+Right | Move into the folder directly above, at its end |
+| Alt+Shift+Right | Move into the folder directly above, at its end. The folder expands. |
 | Alt+Shift+P | Move to the end of Pinned |
 | Alt+Shift+T | Move to the end of Today |
 
@@ -73,4 +74,15 @@ The Space list shows every Space. Clicking one sends `select_space`. The active 
 
 ## Failure handling
 
-Every request has a 10 s timeout. A failed or timed-out pull retries with backoff: 250 ms, doubling, capped at 5 s. The backoff stops at the first usable snapshot. A new event cancels the backoff and pulls at once. While pulls fail, a status line says the page is reconnecting, and the tree keeps the last known state. A command that times out shows an error and pulls a fresh snapshot. Replies from the host are validated before use, and a malformed reply counts as a failed request.
+Every request has a 10 s timeout. Failures fall into two classes.
+
+- Transient: a timeout, a transport failure, an HTTP 5xx status, or an `internal`, `not_found` or `conflict` reply. The status line says the page is reconnecting. A failed pull retries with backoff (250 ms, doubling, capped at 5 s) until a snapshot arrives. A new event cancels the backoff and pulls at once. The tree keeps the last known state.
+- Permanent: an `unsupported_version`, `forbidden` or `bad_request` reply, a 403 or other 4xx status, or a reply the validator rejects. The page shows a refusal message with a Retry button. It stops retrying, and events do not revive it. Only Retry does.
+
+A command that times out shows an error and pulls a fresh snapshot. A command's own error (for example `bad_request` on a rename) shows a notice and does not block the tree. A notice stays until it is dismissed or the next command succeeds.
+
+`stop()` ends all pending work. It clears the subscription, the scheduled pulls and the retry timer. A reply that arrives after `stop()` is dropped, and nothing is sent until `start()` is called again. `start()` always resyncs.
+
+## Addresses
+
+Addresses typed without a scheme default to http for loopback hosts (`localhost`, `127.0.0.0/8`, `::1` in any form, and IPv4-mapped 127.x) and for IPv6 literals. Every other host defaults to https. The 2048-character cap applies to the final URL after percent-encoding.

@@ -186,8 +186,8 @@ describe('normalizeAddress: host:port, length and characters', () => {
     ['localhost:3000', 'http://localhost:3000/'],
     ['localhost', 'http://localhost/'],
     ['example.com:8080', 'https://example.com:8080/'],
-    ['192.168.0.10:8080/admin', 'http://192.168.0.10:8080/admin'],
-    ['192.168.1.1', 'http://192.168.1.1/'],
+    ['192.168.0.10:8080/admin', 'https://192.168.0.10:8080/admin'],
+    ['192.168.1.1', 'https://192.168.1.1/'],
     ['example.com/a?b=1', 'https://example.com/a?b=1'],
   ])('reads %j as a host, not a scheme', (input, url) => {
     expect(normalizeAddress(input)).toStrictEqual({ ok: true, url });
@@ -243,5 +243,61 @@ describe('placements for keyboard moves and the before-drop no-op', () => {
     });
     expect(placementIntoPreviousFolder(snap, 'x')).toBeNull();
     expect(placementIntoPreviousFolder(snap, 'f')).toBeNull();
+  });
+});
+
+describe('normalizeAddress: loopback, IPv6 and the cap after encoding', () => {
+  it.each([
+    ['[::1]:8080', 'http://[::1]:8080/'],
+    ['[::1]', 'http://[::1]/'],
+    ['[0:0:0:0:0:0:0:1]', 'http://[::1]/'],
+    ['[::ffff:127.0.0.1]', 'http://[::ffff:7f00:1]/'],
+    ['[2001:db8::1]', 'http://[2001:db8::1]/'],
+    ['127.0.0.1:8080', 'http://127.0.0.1:8080/'],
+    ['127.1.2.3', 'http://127.1.2.3/'],
+    ['localhost', 'http://localhost/'],
+    ['foo.localhost:3000', 'http://foo.localhost:3000/'],
+    ['10.0.0.5', 'https://10.0.0.5/'],
+    ['example.com', 'https://example.com/'],
+  ])('defaults %j to the right scheme', (input, url) => {
+    expect(normalizeAddress(input)).toStrictEqual({ ok: true, url });
+  });
+
+  it('caps the final URL after percent-encoding, not the typed text', () => {
+    // 400 characters typed. Each "ü" becomes three bytes, so the URL is over 2048 characters.
+    const typed = `https://example.com/${'ü'.repeat(400)}`;
+    expect(typed.length).toBeLessThan(2048);
+    expect(normalizeAddress(typed)).toMatchObject({ ok: false });
+  });
+
+  it('accepts a URL whose encoded length is exactly 2048', () => {
+    const url = `https://example.com/${'a'.repeat(2048 - 20)}`;
+    expect(url.length).toBe(2048);
+    expect(normalizeAddress(url)).toStrictEqual({ ok: true, url });
+  });
+});
+
+describe('placementAtContainerEnd is a no-op when the node is already last', () => {
+  it('returns null for the last root node of the container, and a placement otherwise', () => {
+    const snap = snapshot({ pinned: [tab('a', 'A'), tab('b', 'B')], today: [tab('t', 'T')] });
+    expect(placementAtContainerEnd(snap, 'b', 'pinned')).toBeNull();
+    expect(placementAtContainerEnd(snap, 'a', 'pinned')).toStrictEqual({
+      space: 'space-1',
+      container: 'pinned',
+      parent: null,
+      before: null,
+    });
+    expect(placementAtContainerEnd(snap, 't', 'today')).toBeNull();
+    expect(placementAtContainerEnd(snap, 't', 'pinned')).not.toBeNull();
+  });
+
+  it('a node inside a folder is not at the root, so appending it to the root is a move', () => {
+    const snap = snapshot({ pinned: [folder('f', 'F', [tab('c', 'C')])] });
+    expect(placementAtContainerEnd(snap, 'c', 'pinned')).toStrictEqual({
+      space: 'space-1',
+      container: 'pinned',
+      parent: null,
+      before: null,
+    });
   });
 });

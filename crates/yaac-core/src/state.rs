@@ -31,6 +31,10 @@ pub(crate) struct State {
     /// The tab each Space last had selected. Runtime only: `SessionState` has no field for it, so
     /// after a restart `SelectSpace` falls back to the first today tab.
     pub(crate) last_selected: BTreeMap<SpaceId, NodeId>,
+    /// Set by `WindowClosing`. A closing window issues no engine commands and recreates nothing.
+    pub(crate) closing: bool,
+    /// Consecutive sidebar creations that failed since the last sidebar `Created`.
+    pub(crate) sidebar_failures: u32,
 }
 
 /// One transaction's result: the next state, the store ops, the engine commands (sent only after the
@@ -435,6 +439,14 @@ impl Tx {
     /// Stops treating a sidebar view as a UI principal. Its requests are refused from now on.
     pub(crate) fn forget_sidebar(&mut self, view: ViewId) {
         self.state.sidebar_views.remove(&view);
+    }
+
+    pub(crate) fn begin_closing(&mut self) {
+        self.state.closing = true;
+    }
+
+    pub(crate) fn set_sidebar_failures(&mut self, failures: u32) {
+        self.state.sidebar_failures = failures;
     }
 
     /// Creates the content view of a node, starting on `url`, and shows it when asked.

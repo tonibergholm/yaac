@@ -9,6 +9,9 @@ use yaac_api::{ApiError, Placement};
 use yaac_engine::EngineEvent;
 use yaac_model::{ContainerKind, NodeId, SpaceId, ViewId};
 
+/// Creation attempts for the sidebar in total: the first one and two retries.
+const SIDEBAR_ATTEMPTS: u32 = 3;
+
 pub(crate) enum Step {
     Ignore,
     Plan(Box<Plan>),
@@ -17,7 +20,8 @@ pub(crate) enum Step {
 
 pub(crate) fn on_engine_event(state: &State, event: EngineEvent) -> Step {
     match event {
-        EngineEvent::Created { .. } | EngineEvent::LoadState { .. } => Step::Ignore,
+        EngineEvent::Created { view } => created(state, view),
+        EngineEvent::LoadState { .. } => Step::Ignore,
         EngineEvent::Navigated { view, nav_gen, url } => navigated(state, view, nav_gen, url),
         EngineEvent::TitleChanged {
             view,
@@ -30,11 +34,66 @@ pub(crate) fn on_engine_event(state: &State, event: EngineEvent) -> Step {
             url,
             user_gesture,
         } => popup(state, opener, url, user_gesture),
+        EngineEvent::CreateFailed { view } => create_failed(state, view),
+        EngineEvent::WindowClosing { window } if window == state.window => closing(state),
+        EngineEvent::WindowClosing { .. } => Step::Ignore,
         EngineEvent::WindowClosed { window } if window == state.window => Step::Stop,
         EngineEvent::WindowClosed { .. } => Step::Ignore,
-        // Handled by the core fix branch (`m1/fix-core`).
-        EngineEvent::WindowClosing { .. } | EngineEvent::CreateFailed { .. } => Step::Ignore,
     }
+}
+
+/// The window is closing. From now on nothing reaches the engine for it, and its views' exits are
+/// not handled, so the sidebar is not recreated during quit.
+fn closing(state: &State) -> Step {
+    if state.closing {
+        return Step::Ignore;
+    }
+    let mut tx = Tx::new(state.clone());
+    tx.begin_closing();
+    Step::Plan(Box::new(tx.finish()))
+}
+
+/// A sidebar `Created` ends its failure streak.
+fn created(state: &State, view: ViewId) -> Step {
+    if !state.sidebar_views.contains(&view) || state.sidebar_failures == 0 {
+        return Step::Ignore;
+    }
+    let mut tx = Tx::new(state.clone());
+    tx.set_sidebar_failures(0);
+    Step::Plan(Box::new(tx.finish()))
+}
+
+/// A `CreateView` never produced a view. A content view's node becomes not live, and the selection
+/// stays. The sidebar is retried until `SIDEBAR_ATTEMPTS` have failed in a row.
+fn create_failed(state: &State, view: ViewId) -> Step {
+    if state.closing {
+        return Step::Ignore;
+    }
+    if state.sidebar_views.contains(&view) {
+        return sidebar_failed(state, view);
+    }
+    let Some(&node) = state.view_nodes.get(&view) else {
+        return Step::Ignore;
+    };
+    let mut tx = Tx::new(state.clone());
+    tx.detach_view(node);
+    Step::Plan(Box::new(tx.finish()))
+}
+
+fn sidebar_failed(state: &State, view: ViewId) -> Step {
+    let failures = state.sidebar_failures + 1;
+    let mut tx = Tx::new(state.clone());
+    tx.forget_sidebar(view);
+    tx.set_sidebar_failures(failures);
+    if failures >= SIDEBAR_ATTEMPTS {
+        tracing::error!("the sidebar could not be created after {failures} attempts; not retrying");
+        return Step::Plan(Box::new(tx.finish()));
+    }
+    let Ok(profile) = tx.default_profile() else {
+        return Step::Ignore;
+    };
+    tx.attach_sidebar(profile);
+    Step::Plan(Box::new(tx.finish()))
 }
 
 /// A URL or title change. It applies in memory at once; the actor persists it on its next flush.
@@ -103,6 +162,9 @@ fn title_changed(state: &State, view: ViewId, nav_gen: u64, title: &str) -> Step
 /// A view closed or crashed on its own. A content view's node stays, no longer live. The sidebar
 /// is recreated under a new view id, and the old one stops being a UI principal.
 fn detached(state: &State, view: ViewId) -> Step {
+    if state.closing {
+        return Step::Ignore;
+    }
     if state.sidebar_views.contains(&view) {
         return sidebar_lost(state, view);
     }
@@ -127,7 +189,7 @@ fn sidebar_lost(state: &State, view: ViewId) -> Step {
 /// A user-gesture popup opens a tab in the opener's Space. Other popups are dropped.
 fn popup(state: &State, opener: ViewId, url: String, user_gesture: bool) -> Step {
     // Page content never names an app:// URL, and `check` refuses it for everyone.
-    if !user_gesture || urls::check(&url).is_err() {
+    if state.closing || !user_gesture || urls::check(&url).is_err() {
         return Step::Ignore;
     }
     let Some(&opener_node) = state.view_nodes.get(&opener) else {

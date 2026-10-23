@@ -7,7 +7,7 @@
 
 use crate::auth;
 use crate::commands;
-use crate::error::internal;
+use crate::error::{conflict, internal};
 use crate::events::{self, Step};
 use crate::state::{Plan, State, snapshot};
 use crate::{Principal, Store, StoreError, StoreOp};
@@ -174,6 +174,10 @@ impl Actor {
             Body::Query(_) => snapshot(&self.state).map(ResponseBody::Snapshot),
             Body::Command(command) => {
                 let (plan, answer) = commands::plan(&self.state, command)?;
+                // A closing window takes no command that creates, selects or navigates a view.
+                if self.state.closing && !plan.effects.is_empty() {
+                    return Err(conflict("window is closing"));
+                }
                 self.commit(plan).await?;
                 Ok(answer.into_body(self.state.ws.rev))
             }
@@ -182,7 +186,9 @@ impl Actor {
 
     /// Returns true when the actor should stop.
     async fn on_engine_event(&mut self, event: EngineEvent) -> bool {
-        match events::on_engine_event(&self.state, event) {
+        let closing =
+            matches!(&event, EngineEvent::WindowClosing { window } if *window == self.state.window);
+        let stop = match events::on_engine_event(&self.state, event) {
             Step::Ignore => false,
             Step::Stop => true,
             Step::Plan(plan) => {
@@ -191,7 +197,11 @@ impl Actor {
                 }
                 false
             }
+        };
+        if closing && let Err(error) = self.flush().await {
+            tracing::warn!("coalesced writes not flushed on close: {error}");
         }
+        stop
     }
 
     /// Commit before effect. A plan that is not coalesced first persists the pending writes with its
@@ -201,10 +211,14 @@ impl Actor {
         let Plan {
             state,
             ops,
-            effects,
+            mut effects,
             topic,
             coalesce,
         } = plan;
+        if state.closing {
+            // Nothing reaches the engine for a closing window.
+            effects.clear();
+        }
         if coalesce {
             for op in ops {
                 if let StoreOp::UpsertNode(node) = op {
