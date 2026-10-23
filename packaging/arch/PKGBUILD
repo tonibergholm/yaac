@@ -107,6 +107,8 @@ prepare() {
 build() {
   cd yaac
   export CEF_PATH="$srcdir/cef"
+  # Crates were fetched in prepare(); the build must not touch the network.
+  export CARGO_NET_OFFLINE=true
   (cd ui && pnpm build)
   # Assembles the same runtime layout as the development bundle, with the UI embedded.
   YAAC_BUNDLE_NO_UI=1 PROFILE=release BUNDLE_OUT="$srcdir/bundle" \

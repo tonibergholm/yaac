@@ -21,6 +21,14 @@ pub(crate) fn helper_sandbox(_args: &cef::args::Args) -> HelperSandbox {
     HelperSandbox
 }
 
+/// Gives the top-level window its requested client size before it is shown. On the Linux headless
+/// Ozone platform the window stayed 1x1 while its root panel was laid out at the requested size, so
+/// the browser views got no height (found by the engine harness, see docs/spikes/m2-linux-omarchy.md).
+pub(crate) fn fit_window(window: &Window, width: i32, height: i32) {
+    let size = Size { width, height };
+    window.set_size(Some(&size));
+}
+
 /// Linux has no application subclass to install.
 pub(crate) fn setup_application() {}
 

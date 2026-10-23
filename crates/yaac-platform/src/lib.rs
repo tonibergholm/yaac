@@ -1,5 +1,5 @@
-//! Platform traits (docs/architecture.md section 5). Operating-system implementations live in
-//! `macos` behind `cfg`. M1 needs only paths and the main-thread hook.
+//! Platform traits (docs/architecture.md section 5). Operating-system implementations live in `macos`
+//! and `linux`, each behind `cfg`. So far they provide the paths and the main-thread hook.
 
 use std::fs::{DirBuilder, OpenOptions, Permissions};
 use std::io;

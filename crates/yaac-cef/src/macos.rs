@@ -5,7 +5,7 @@
 use crate::engine;
 use cef::application_mac::{CefAppProtocol, CrAppControlProtocol, CrAppProtocol};
 use cef::{
-    CefString, CommandLine, ImplCommandLine, args::Args, library_loader::LibraryLoader,
+    CefString, CommandLine, ImplCommandLine, Window, args::Args, library_loader::LibraryLoader,
     sandbox::Sandbox,
 };
 use objc2::{
@@ -36,6 +36,9 @@ pub(crate) fn helper_sandbox(args: &Args) -> Sandbox {
     sandbox.initialize(args.as_main_args());
     sandbox
 }
+
+/// macOS sizes the window from its delegate already; nothing to do.
+pub(crate) fn fit_window(_window: &Window, _width: i32, _height: i32) {}
 
 /// macOS takes no platform switch: the default platform is the right one.
 pub(crate) fn add_platform_switches(_command_line: &mut CommandLine) {}

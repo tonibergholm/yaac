@@ -6,10 +6,13 @@
 # Each harness must exit 0 AND print `HARNESS result=pass`. The self-test (a forced failure after the
 # window closes) must exit non-zero, which shows the harness verdict reaches the exit code.
 #
-# Linux: the GUI harnesses run in a NESTED headless Hyprland session, never the owner's session. The
-# script refuses to start unless the environment is that session (see `guard_linux`), and it runs
-# the app with HOME and the XDG directories under YAAC_TEST_HOME, so no app state lands in the
-# owner's home. Start the session with the nested-compositor scripts first.
+# Linux has two modes. Both run the app with HOME, the XDG directories and TMPDIR under
+# YAAC_TEST_HOME, so no app state lands in the owner's home.
+#   - YAAC_OZONE=headless: Chromium's headless Ozone platform, no compositor, no display variables.
+#     Checks the engine and the harness verdicts. Cannot reach any session.
+#   - default: a display run, only inside a NESTED headless Hyprland session. `guard_linux` refuses
+#     to start unless the environment is that session, and it removes DISPLAY and XAUTHORITY so a
+#     dead nested session cannot fall back to the owner's XWayland. See docs/spikes/m2-linux-omarchy.md.
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -17,19 +20,41 @@ root=$(cd "$here/../../.." && pwd)
 os=$(uname -s)
 export YAAC_MOCK_KEYCHAIN=1
 fail=0
-log=$(mktemp -d)
+ozone_arg=
 
 case "$os" in
-    Darwin) app=${APP:-$root/target/bundle/yaac-app.app/Contents/MacOS/yaac-app} ;;
+    Darwin)
+        app=${APP:-$root/target/bundle/yaac-app.app/Contents/MacOS/yaac-app}
+        log=$(mktemp -d)
+        ;;
     Linux)
         app=${APP:-$root/target/bundle-linux/yaac-app}
         : "${YAAC_TEST_HOME:?Linux: set YAAC_TEST_HOME to a scratch directory outside the real home data}"
         ;;
     *) echo "run-harnesses: unsupported OS $os" >&2; exit 2 ;;
 esac
+if [ ! -x "$app" ]; then
+    echo "run-harnesses: no executable at $app (run the bundle script first)" >&2
+    exit 2
+fi
+app_real=$app
+[ "$os" = Linux ] && app_real=$(readlink -f "$app")
 
-# The owner's session must never receive a window or input from these runs. Refuse unless every
-# variable points at the nested headless session (scripts/nested/env.sh sets them).
+# Points HOME, the XDG directories and TMPDIR at YAAC_TEST_HOME and creates them.
+isolate_home() {
+    export HOME=$YAAC_TEST_HOME/home
+    export XDG_CONFIG_HOME=$YAAC_TEST_HOME/config
+    export XDG_DATA_HOME=$YAAC_TEST_HOME/data
+    export XDG_CACHE_HOME=$YAAC_TEST_HOME/cache
+    export XDG_STATE_HOME=$YAAC_TEST_HOME/state
+    export TMPDIR=$YAAC_TEST_HOME/tmp
+    mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" "$TMPDIR"
+    log=$(mktemp -d "$TMPDIR/harness-logs.XXXXXX")
+}
+
+# A display run: the owner's session must never receive a window or input from it. Refuse unless the
+# environment is the nested headless session (XDG_RUNTIME_DIR, its Wayland socket, its Hyprland
+# instance and its dead bus). No X display is passed, so Chromium cannot choose XWayland.
 guard_linux() {
     case "${XDG_RUNTIME_DIR:-}" in
         */yaac-nested) ;;
@@ -43,41 +68,51 @@ guard_linux() {
         *yaac-nested/no-bus) ;;
         *) echo "run-harnesses: DBUS_SESSION_BUS_ADDRESS must be the dead nested bus" >&2; exit 2 ;;
     esac
-    # Isolation: the app's HOME, XDG and temp directories all live under YAAC_TEST_HOME.
-    export HOME=$YAAC_TEST_HOME/home
-    export XDG_CONFIG_HOME=$YAAC_TEST_HOME/config
-    export XDG_DATA_HOME=$YAAC_TEST_HOME/data
-    export XDG_CACHE_HOME=$YAAC_TEST_HOME/cache
-    export XDG_STATE_HOME=$YAAC_TEST_HOME/state
-    export TMPDIR=$YAAC_TEST_HOME/tmp
-    mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" "$TMPDIR"
-    log=$(mktemp -d "$TMPDIR/harness-logs.XXXXXX")
+    unset DISPLAY XAUTHORITY WAYLAND_SOCKET
+    ozone_arg=--ozone-platform=wayland
+    isolate_home
 }
 
-# YAAC_OZONE=headless: no compositor at all. Chromium's headless Ozone platform runs the stages
-# without a display, so nothing can reach any session. It checks the engine and the harnesses, not
-# window painting, decorations or input; those need the nested Hyprland session (see the M2 spike
-# note). Every display variable is removed so this mode cannot attach to a session by accident.
-ozone_arg=
-if [ "${YAAC_OZONE:-}" = headless ]; then
-    [ "$os" = Linux ] || { echo "run-harnesses: YAAC_OZONE=headless is for Linux" >&2; exit 2; }
-    unset WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE
-    export HOME=$YAAC_TEST_HOME/home XDG_CONFIG_HOME=$YAAC_TEST_HOME/config \
-        XDG_DATA_HOME=$YAAC_TEST_HOME/data XDG_CACHE_HOME=$YAAC_TEST_HOME/cache \
-        XDG_STATE_HOME=$YAAC_TEST_HOME/state TMPDIR=$YAAC_TEST_HOME/tmp
-    mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" "$TMPDIR"
-    log=$(mktemp -d "$TMPDIR/harness-logs.XXXXXX")
-    ozone_arg=--ozone-platform=headless
-    echo "run-harnesses: headless Ozone mode (no compositor)"
-elif [ "$os" = Linux ]; then
-    guard_linux
+if [ "$os" = Linux ]; then
+    if [ "${YAAC_OZONE:-}" = headless ]; then
+        # No compositor at all. Every display variable is removed, and the runtime directory and the
+        # bus point at dead paths inside the test home, so nothing can attach to a session.
+        unset WAYLAND_DISPLAY DISPLAY XAUTHORITY WAYLAND_SOCKET HYPRLAND_INSTANCE_SIGNATURE
+        isolate_home
+        export XDG_RUNTIME_DIR=$YAAC_TEST_HOME/runtime
+        mkdir -p -m 700 "$XDG_RUNTIME_DIR"
+        export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/no-bus
+        ozone_arg=--ozone-platform=headless
+        echo "run-harnesses: headless Ozone mode (no compositor)"
+    else
+        guard_linux
+    fi
 fi
 
-# No process of this bundle may outlive a stage: zygotes and renderers can survive a killed browser.
+# PIDs of processes running this bundle's executable. The browser, its zygotes, renderers and GPU
+# process all run the same executable. Linux compares the exact executable path of processes owned
+# by this user. macOS uses pgrep on the bundle path.
+app_pids() {
+    if [ "$os" = Linux ]; then
+        for d in /proc/[0-9]*; do
+            [ -O "$d" ] || continue
+            [ "$(readlink "$d/exe" 2>/dev/null)" = "$app_real" ] && echo "${d#/proc/}"
+        done
+    else
+        pgrep -f -- "$app" 2>/dev/null
+    fi
+}
+
+# No process of this bundle may outlive a stage: zygotes and renderers can exit a moment after the
+# browser. Wait up to 10 s, then fail and kill exactly the processes found.
 leftover() {
-    if pgrep -f -- "$app" >/dev/null 2>&1; then
-        echo "FAIL leftover processes after $1:"; pgrep -af -- "$app" | head -5; fail=1
-        pkill -f -- "$app" 2>/dev/null
+    i=0
+    while [ -n "$(app_pids)" ] && [ "$i" -lt 10 ]; do sleep 1; i=$((i + 1)); done
+    pids=$(app_pids)
+    if [ -n "$pids" ]; then
+        echo "FAIL leftover processes after $1: $(echo $pids)"
+        fail=1
+        for p in $pids; do kill -9 "$p" 2>/dev/null; done
     fi
 }
 

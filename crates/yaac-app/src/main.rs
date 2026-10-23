@@ -27,7 +27,8 @@ use yaac_platform::{AppPaths, Platform, ensure_private_dir};
 /// macOS helper is a separate bundled binary, so there is nothing to do here.
 #[cfg(target_os = "linux")]
 fn helper_exit() -> Option<ExitCode> {
-    if std::env::args().any(|arg| arg.starts_with("--type=")) {
+    // Raw bytes: a non-UTF-8 argument must not panic before CEF sees it.
+    if std::env::args_os().any(|arg| arg.as_encoded_bytes().starts_with(b"--type=")) {
         return Some(ExitCode::from(yaac_cef::run_helper() as u8));
     }
     None
@@ -150,7 +151,11 @@ fn main() -> ExitCode {
     if let Some(code) = helper_exit() {
         return code;
     }
-    let mode = match Mode::from_args(std::env::args().skip(1)) {
+    let mode = match Mode::from_args(
+        std::env::args_os()
+            .skip(1)
+            .map(|a| a.to_string_lossy().into_owned()),
+    ) {
         Ok(mode) => mode,
         Err(message) => {
             eprintln!("yaac-app: {message}");
