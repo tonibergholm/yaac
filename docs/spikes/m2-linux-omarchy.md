@@ -82,12 +82,14 @@ Not applied, with reasons: the first reviewer said the bundle ships `libEGL.so` 
 
 Not run: anything on a display. The owner must decide how display runs happen. Two options:
 
-**A. Owner present, live session (the owner runs it himself).** The owner at the machine can run the GUI checks in his own session, because a window he can see is his decision. Steps, from a terminal in his session, after `git pull` in `~/yaac-m2/yaac`:
+**A. Owner in his live session (he runs it himself, at the machine).** The laptop goes offline at 18:30, so nothing is driven over SSH. Steps, in a terminal inside his Hyprland session:
 
-1. `CEF_PATH=~/yaac-m2-cache/cef crates/yaac-app/scripts/bundle-linux.sh`
-2. Start the app with its data isolated: `env HOME=~/yaac-m2-cache/run-live/home XDG_CONFIG_HOME=~/yaac-m2-cache/run-live/config XDG_DATA_HOME=~/yaac-m2-cache/run-live/data XDG_CACHE_HOME=~/yaac-m2-cache/run-live/cache XDG_STATE_HOME=~/yaac-m2-cache/run-live/state TMPDIR=~/yaac-m2-cache/run-live/tmp target/bundle-linux/yaac-app`. Expect a window with a sidebar and a tab.
-3. Check and write down: whether the window has a titlebar and who draws it (`hyprctl clients -j`: `class`, `title`, `xwayland`, `floating`; `WAYLAND_DEBUG=client` for `set_mode` if needed); whether both views paint (a colour test page as content); click a tab and watch the tab tree change; `grep Seccomp` on a renderer; `chrome://gpu` for the GL backend; `~/.config/cef_user_data` after the run.
-4. Close the window with its close button (a clean quit), and check `pgrep -fa bundle-linux/yaac-app` is empty.
+1. `cd ~/yaac-m2/yaac && git pull --ff-only origin m2/linux`
+2. Build the bundle: `CEF_PATH=~/yaac-m2-cache/cef crates/yaac-app/scripts/bundle-linux.sh`
+3. Run the one script and paste the report it prints (`~/yaac-m2-cache/live-report.txt`): `crates/yaac-app/scripts/live-session-check.sh`. It prints its plan first, opens the window, keeps it open for `LIVE_SECONDS` (default 60) so you can click a tab, asks two yes/no questions, closes the app it started, and checks that it is gone.
+4. Release-store check (needs a release bundle, see item 8 below): `PROFILE=release CEF_PATH=~/yaac-m2-cache/cef crates/yaac-app/scripts/bundle-linux.sh`, then run the script again with `BUNDLE_DIR` pointing at the release bundle (the script prints a note if only the debug bundle exists).
+
+Idle lock: the script does not toggle it. If the screensaver interrupts the run, pause it yourself and undo afterwards.
 
 **B. Nested session.** A nested compositor needs an approved method. The DRM-backed workaround above is one candidate; it is not approved. Decide before anything else runs.
 

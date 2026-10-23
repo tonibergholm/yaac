@@ -64,6 +64,8 @@ for file in "$cef_dist"/*.so* "$cef_dist"/*.bin "$cef_dist"/*.dat "$cef_dist"/*.
     [ -f "$file" ] && cp -a "$file" "$out/"
 done
 cp -a "$cef_dist/locales" "$out/"
+# Which build this is (read by live-session-check.sh).
+printf '%s\n' "$profile" > "$out/BUILD-PROFILE"
 test -f "$out/libcef.so" || { echo "bundle-linux: libcef.so missing from the bundle" >&2; exit 1; }
 
 # Fail here, not at launch, if a shared library cannot be resolved.
