@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 import type { Sidebar } from '../state/sidebar';
+import { NEW_TAB_BUTTON_ID } from './ids';
 import { PlusIcon } from './icons';
 
 interface Props {
@@ -20,14 +21,15 @@ export function Toolbar({ sidebar }: Props) {
   const submitFolder = () => {
     if (folderName === null) return;
     const sent = sidebar.createFolder('today', folderName);
+    // Close the field only when the core accepted the folder. The rename then starts on it.
     void sent.then((result) => {
-      if (result !== null) setFolderName(null);
+      if (result?.status === 'ok') setFolderName(null);
     });
   };
 
   return (
     <div class="toolbar">
-      <button type="button" class="button" onClick={() => void sidebar.newTab()}>
+      <button id={NEW_TAB_BUTTON_ID} type="button" class="button" onClick={() => void sidebar.newTab()}>
         <PlusIcon />
         New tab
       </button>

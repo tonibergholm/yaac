@@ -28,6 +28,8 @@ interface MockSpace {
   id: SpaceId;
   name: string;
   containers: Record<ContainerKind, NodeView[]>;
+  /** The selected tab when the window last left this Space. */
+  lastSelected: NodeId | null;
 }
 
 interface Found {
@@ -188,8 +190,9 @@ export class MockBridge implements Bridge {
       case 'create_folder': {
         const title = this.requireTitle(command.title);
         const { list } = this.resolvePlacement(command.placement);
-        this.insert(list, newNode(this.id(), 'folder', title, null), command.placement.before);
-        return this.ack(this.bump());
+        const folder = newNode(this.id(), 'folder', title, null);
+        this.insert(list, folder, command.placement.before);
+        return { type: 'opened', node: folder.id, rev: this.bump() };
       }
       case 'rename_node': {
         const title = this.requireTitle(command.title);
@@ -202,6 +205,7 @@ export class MockBridge implements Bridge {
         const name = this.requireTitle(command.name);
         const space: MockSpace = {
           id: `space-${this.nextSpace++}`,
+          lastSelected: null,
           name,
           containers: { favorites: [], pinned: [], today: [], archive: [] },
         };
@@ -214,6 +218,25 @@ export class MockBridge implements Bridge {
         found.node.url = command.url;
         found.node.title = '';
         found.node.live = true;
+        return this.ack(this.bump());
+      }
+      case 'select_space': {
+        const target = this.spaces.find((s) => s.id === command.space);
+        if (!target) fail('not_found', `space ${command.space} does not exist`);
+        if (target.id === this.activeSpace) return this.ack();
+        const current = this.spaces.find((s) => s.id === this.activeSpace);
+        if (current) current.lastSelected = this.selected;
+        this.activeSpace = target.id;
+        // The Space's last selected tab, else its first today tab, else a new about:blank tab.
+        let next = target.lastSelected !== null && this.isSidebarTab(target, target.lastSelected) ? target.lastSelected : this.firstTodayTab();
+        if (next === null) {
+          const node = newNode(this.id(), 'tab', '', 'about:blank', { live: true });
+          target.containers.today.push(node);
+          next = node.id;
+        }
+        this.selected = next;
+        const selectedNode = this.find(next)?.node;
+        if (selectedNode) selectedNode.live = true;
         return this.ack(this.bump());
       }
       case 'back':
@@ -307,6 +330,11 @@ export class MockBridge implements Bridge {
     list.splice(index, 0, node);
   }
 
+  private isSidebarTab(space: MockSpace, id: NodeId): boolean {
+    const found = this.find(id);
+    return found !== null && found.space === space && found.node.kind === 'tab' && found.container !== 'archive';
+  }
+
   private firstTodayTab(): NodeId | null {
     const space = this.spaces.find((s) => s.id === this.activeSpace);
     return space?.containers.today.find((n) => n.kind === 'tab')?.id ?? null;
@@ -330,6 +358,7 @@ export class MockBridge implements Bridge {
   private seed(): void {
     const personal: MockSpace = {
       id: 'space-personal',
+      lastSelected: null,
       name: 'Personal',
       containers: { favorites: [], pinned: [], today: [], archive: [] },
     };

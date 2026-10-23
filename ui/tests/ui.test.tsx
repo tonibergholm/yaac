@@ -240,7 +240,7 @@ describe('keyboard navigation', () => {
     const { bridge } = await mount(standardTree());
     fireEvent.keyDown(item(/^Mail/), { key: 'Enter' });
     fireEvent.keyDown(item(/^Mail/), { key: 'Delete' });
-    fireEvent.keyDown(item(/^Mail/), { key: 'ArrowUp', altKey: true });
+    fireEvent.keyDown(item(/^Mail/), { key: 'ArrowUp', altKey: true, shiftKey: true });
     await waitFor(() => expect(bridge.commands().length).toBe(3));
     expect(bridge.commands()).toStrictEqual<Command[]>([
       { type: 'select_tab', node: 'm' },

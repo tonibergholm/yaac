@@ -1,10 +1,8 @@
 /**
- * A link or file dragged in from outside the page would navigate the sidebar if dropped on it.
- * Cancel `dragover` and `drop` at the window, in the capture phase, so no element can let such a
- * drop through. Internal drops are unaffected: rows and containers decide validity themselves.
+ * Cancels every `drop` at the window, in the capture phase, so a link or file dropped from outside
+ * cannot navigate the page. `dragover` is not touched: rows and containers accept it only on valid
+ * targets, which keeps the "not allowed" feedback. Each drop is validated again at commit.
  */
 export function guardForeignDrops(target: Window = window): void {
-  for (const type of ['dragover', 'drop'] as const) {
-    target.addEventListener(type, (event) => event.preventDefault(), { capture: true });
-  }
+  target.addEventListener('drop', (event) => event.preventDefault(), { capture: true });
 }

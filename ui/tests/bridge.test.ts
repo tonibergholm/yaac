@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BridgeError, HttpBridge } from '../src/bridge/http-bridge';
+import { HttpBridge } from '../src/bridge/http-bridge';
+import { BridgeError } from '../src/bridge/types';
 import { MockBridge } from '../src/bridge/mock-bridge';
 import type { ApiResult, Body, CoreEvent, Snapshot } from '../src/wire';
 import { flush } from './support';

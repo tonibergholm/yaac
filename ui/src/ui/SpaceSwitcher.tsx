@@ -9,8 +9,9 @@ interface Props {
 }
 
 /**
- * Lists the Spaces and marks the active one. The wire has no command to change the active
- * Space yet, so the list is informational. Creating a Space is inline: no `prompt()`.
+ * Lists the Spaces. Clicking one switches the window to it (`select_space`). The active Space is
+ * marked with aria-current. New Space is an inline name field, and the core switches to the new
+ * Space once it is created.
  */
 export function SpaceSwitcher({ sidebar, snapshot }: Props) {
   const [adding, setAdding] = useState(false);
@@ -40,8 +41,15 @@ export function SpaceSwitcher({ sidebar, snapshot }: Props) {
         {snapshot.spaces.map((space) => {
           const active = space.id === snapshot.active_space;
           return (
-            <li key={space.id} class={active ? 'space active' : 'space'} aria-current={active ? 'true' : undefined}>
-              {space.name}
+            <li key={space.id}>
+              <button
+                type="button"
+                class="space"
+                aria-current={active ? 'true' : undefined}
+                onClick={() => void sidebar.selectSpace(space.id)}
+              >
+                {space.name}
+              </button>
             </li>
           );
         })}

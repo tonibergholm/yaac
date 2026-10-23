@@ -129,3 +129,34 @@ describe('Sidebar actions send exact Command JSON', () => {
     expect(bridge.commands()).toStrictEqual<Command[]>([{ type: 'rename_node', node: 'a', title: 'Beta' }]);
   });
 });
+
+describe('Space and folder actions', () => {
+  it('selectSpace sends select_space, and selecting the active Space sends nothing', async () => {
+    await sidebar.selectSpace('space-2');
+    await sidebar.selectSpace('space-1');
+    expect(bridge.commands()).toStrictEqual<Command[]>([{ type: 'select_space', space: 'space-2' }]);
+  });
+
+  it('createFolder starts an inline rename on the folder the core returns', async () => {
+    bridge.respond = (body) =>
+      body.kind === 'command' && body.body.type === 'create_folder'
+        ? { status: 'ok', body: { type: 'opened', node: 'new-folder', rev: 11 } }
+        : { status: 'ok', body: { type: 'ack', rev: 11 } };
+    await sidebar.createFolder('today', 'Reading');
+    expect(sidebar.store.get().renamingId).toBe('new-folder');
+  });
+
+  it('createSpace switches to the Space the core created', async () => {
+    bridge.respond = (body) => {
+      if (body.kind === 'command' && body.body.type === 'create_space') {
+        return { status: 'ok', body: { type: 'space_created', space: 'space-3', rev: 11 } };
+      }
+      return { status: 'ok', body: { type: 'ack', rev: 11 } };
+    };
+    await sidebar.createSpace('Research');
+    expect(bridge.commands()).toStrictEqual<Command[]>([
+      { type: 'create_space', name: 'Research' },
+      { type: 'select_space', space: 'space-3' },
+    ]);
+  });
+});

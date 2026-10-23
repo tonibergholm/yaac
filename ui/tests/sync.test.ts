@@ -10,6 +10,15 @@ async function settle(): Promise<void> {
   }
 }
 
+/**
+ * Advances fake time, then drains zero-delay timers. A timer created exactly at the end of an
+ * advance (for example a retry that schedules a pull) would otherwise stay pending.
+ */
+async function tick(ms: number): Promise<void> {
+  await vi.advanceTimersByTimeAsync(ms);
+  await settle();
+}
+
 function snapshotResult(snap: Snapshot): ApiResult {
   return { status: 'ok', body: { type: 'snapshot', ...clone(snap) } };
 }
@@ -124,23 +133,180 @@ describe('Sidebar sync', () => {
     sidebar.stop();
   });
 
-  it('does not retry in a loop after a failed pull until the next event', async () => {
+  it('retries a failed pull with doubling backoff and stops once a snapshot arrives', async () => {
     const bridge = new FakeBridge(snapshot({ rev: 5 }));
     const sidebar = new Sidebar(bridge);
     sidebar.start();
     await settle();
     bridge.requests.length = 0;
 
-    bridge.respond = () => {
-      throw new Error('transport down');
+    let down = true;
+    bridge.respond = (body) => {
+      if (body.kind === 'query' && down) throw new Error('transport down');
+      if (body.kind === 'query') return snapshotResult(snapshot({ rev: 6 }));
+      return { status: 'ok', body: { type: 'ack', rev: 0 } };
     };
     bridge.emit({ topic: 'tree', rev: 6 });
     await settle();
     expect(bridge.queries()).toHaveLength(1);
-    expect(sidebar.store.get().notice).not.toBeNull();
+    expect(sidebar.store.get().link).toBe('reconnecting');
 
-    await vi.advanceTimersByTimeAsync(10_000);
+    // Attempts at 250 ms, 750 ms, 1750 ms after the first failure: gaps of 250, 500, 1000.
+    await tick(249);
     expect(bridge.queries()).toHaveLength(1);
+    await tick(1);
+    expect(bridge.queries()).toHaveLength(2);
+    await tick(499);
+    expect(bridge.queries()).toHaveLength(2);
+    await tick(1);
+    expect(bridge.queries()).toHaveLength(3);
+    await tick(999);
+    expect(bridge.queries()).toHaveLength(3);
+    await tick(1);
+    expect(bridge.queries()).toHaveLength(4);
+
+    down = false;
+    await tick(2_000);
+    expect(bridge.queries()).toHaveLength(5);
+    expect(sidebar.store.get().snapshot?.rev).toBe(6);
+    expect(sidebar.store.get().link).toBe('ok');
+
+    // No further retries once the link is back.
+    await tick(60_000);
+    expect(bridge.queries()).toHaveLength(5);
+    sidebar.stop();
+  });
+
+  it('caps the backoff at 5 s', async () => {
+    const bridge = new FakeBridge(snapshot({ rev: 5 }));
+    const sidebar = new Sidebar(bridge);
+    sidebar.start();
+    await settle();
+    bridge.requests.length = 0;
+    bridge.respond = () => {
+      throw new Error('transport down');
+    };
+    bridge.emit({ topic: 'tree', rev: 6 });
+    // Gaps 250, 500, 1000, 2000, 4000 are followed by 5000 for every later attempt.
+    await tick(250 + 500 + 1_000 + 2_000 + 4_000);
+    expect(bridge.queries()).toHaveLength(6);
+    await tick(4_999);
+    expect(bridge.queries()).toHaveLength(6);
+    await tick(1);
+    expect(bridge.queries()).toHaveLength(7);
+    await tick(5_000);
+    expect(bridge.queries()).toHaveLength(8);
+    sidebar.stop();
+  });
+
+  it('an event that arrives during backoff pulls at once and cancels the scheduled retry', async () => {
+    const bridge = new FakeBridge(snapshot({ rev: 5 }));
+    const sidebar = new Sidebar(bridge);
+    sidebar.start();
+    await settle();
+    bridge.requests.length = 0;
+    let down = true;
+    bridge.respond = (body) => {
+      if (body.kind === 'query' && down) throw new Error('transport down');
+      if (body.kind === 'query') return snapshotResult(snapshot({ rev: 9 }));
+      return { status: 'ok', body: { type: 'ack', rev: 0 } };
+    };
+    bridge.emit({ topic: 'tree', rev: 6 });
+    await settle();
+    expect(bridge.queries()).toHaveLength(1);
+
+    // The retry would fire at 250 ms. An event at 100 ms supersedes it.
+    await tick(100);
+    down = false;
+    bridge.emit({ topic: 'tree', rev: 9 });
+    await settle();
+    expect(bridge.queries()).toHaveLength(2);
+    expect(sidebar.store.get().snapshot?.rev).toBe(9);
+    expect(sidebar.store.get().link).toBe('ok');
+
+    // The cancelled retry does not fire later.
+    await tick(10_000);
+    expect(bridge.queries()).toHaveLength(2);
+    sidebar.stop();
+  });
+
+  it('a request that never answers times out after 10 s and is retried', async () => {
+    const bridge = new FakeBridge(snapshot({ rev: 5 }));
+    const sidebar = new Sidebar(bridge);
+    sidebar.start();
+    await settle();
+    bridge.requests.length = 0;
+
+    let hang = true;
+    bridge.respond = (body) => {
+      if (body.kind === 'query' && hang) return new Promise<ApiResult>(() => {});
+      if (body.kind === 'query') return snapshotResult(snapshot({ rev: 6 }));
+      return { status: 'ok', body: { type: 'ack', rev: 0 } };
+    };
+    bridge.emit({ topic: 'tree', rev: 6 });
+    await tick(9_999);
+    expect(sidebar.store.get().link).toBe('ok');
+    await tick(1);
+    expect(sidebar.store.get().link).toBe('reconnecting');
+    expect(bridge.queries()).toHaveLength(1);
+
+    hang = false;
+    await tick(250);
+    expect(bridge.queries()).toHaveLength(2);
+    expect(sidebar.store.get().snapshot?.rev).toBe(6);
+    expect(sidebar.store.get().link).toBe('ok');
+    sidebar.stop();
+  });
+
+  it('a command that times out reports an error and triggers a fresh pull', async () => {
+    const bridge = new FakeBridge(snapshot({ rev: 5 }));
+    const sidebar = new Sidebar(bridge);
+    sidebar.start();
+    await settle();
+    bridge.requests.length = 0;
+
+    bridge.respond = (body) => {
+      if (body.kind === 'command') return new Promise<ApiResult>(() => {});
+      return snapshotResult(snapshot({ rev: 5 }));
+    };
+    const pending = sidebar.closeTab('t1');
+    await tick(10_000);
+    await pending;
+    expect(sidebar.store.get().notice).toMatch(/did not answer in time/);
+    await settle();
+    expect(bridge.queries()).toHaveLength(1);
+    expect(sidebar.store.get().link).toBe('ok');
+    sidebar.stop();
+  });
+
+  it('a backoff retry is cancelled by a manual retry, which resets the backoff', async () => {
+    const bridge = new FakeBridge(snapshot({ rev: 5 }));
+    const sidebar = new Sidebar(bridge);
+    sidebar.start();
+    await settle();
+    bridge.requests.length = 0;
+    let down = true;
+    bridge.respond = (body) => {
+      if (body.kind === 'query' && down) throw new Error('transport down');
+      if (body.kind === 'query') return snapshotResult(snapshot({ rev: 6 }));
+      return { status: 'ok', body: { type: 'ack', rev: 0 } };
+    };
+    bridge.emit({ topic: 'tree', rev: 6 });
+    await tick(250 + 500 + 1_000);
+    expect(bridge.queries()).toHaveLength(4);
+
+    down = false;
+    sidebar.retry();
+    await settle();
+    expect(bridge.queries()).toHaveLength(5);
+    expect(sidebar.store.get().snapshot?.rev).toBe(6);
+
+    // A later failure starts again at 250 ms, not at the old delay.
+    down = true;
+    bridge.emit({ topic: 'tree', rev: 7 });
+    await settle();
+    await tick(250);
+    expect(bridge.queries()).toHaveLength(7);
     sidebar.stop();
   });
 

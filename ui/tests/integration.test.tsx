@@ -44,7 +44,7 @@ describe('core round trip with MockBridge', () => {
     const mailId = mail.dataset.nodeId;
     mail.focus();
 
-    fireEvent.keyDown(mail, { key: 'ArrowDown', altKey: true });
+    fireEvent.keyDown(mail, { key: 'ArrowDown', altKey: true, shiftKey: true });
 
     await waitFor(() => {
       const work = screen.getByRole('treeitem', { name: /^Work/ });
@@ -57,9 +57,43 @@ describe('core round trip with MockBridge', () => {
 });
 
 describe('drops from outside the page', () => {
-  it('cancels a drop that did not start inside the sidebar, so the page cannot navigate', async () => {
+  it('cancels every drop, so the page cannot navigate; dragover is left to the valid targets', async () => {
     await mountMock();
-    expect(fireEvent.dragOver(document.body)).toBe(false);
+    // Not accepted here, so the browser shows the "not allowed" cursor.
+    expect(fireEvent.dragOver(document.body)).toBe(true);
     expect(fireEvent.drop(document.body)).toBe(false);
+  });
+});
+
+describe('folders and Spaces with MockBridge', () => {
+  it('new folder is created, then named inline, and the name lands in the tree', async () => {
+    await mountMock();
+    fireEvent.click(screen.getByRole('button', { name: 'New folder' }));
+    const field = screen.getByRole('textbox', { name: 'Folder name' });
+    fireEvent.input(field, { target: { value: 'Reading' } });
+    fireEvent.keyDown(field, { key: 'Enter' });
+
+    const rename = await screen.findByRole('textbox', { name: 'Rename' });
+    await waitFor(() => expect(document.activeElement).toBe(rename));
+    fireEvent.input(rename, { target: { value: 'Reading list' } });
+    fireEvent.keyDown(rename, { key: 'Enter' });
+
+    await waitFor(() => expect(screen.getByRole('treeitem', { name: /^Reading list/ })).toBeTruthy());
+  });
+
+  it('creating a Space switches to it, and the core opens a tab in an empty Space', async () => {
+    await mountMock();
+    fireEvent.click(screen.getByRole('button', { name: 'New space' }));
+    const field = screen.getByRole('textbox', { name: 'Space name' });
+    fireEvent.input(field, { target: { value: 'Research' } });
+    fireEvent.keyDown(field, { key: 'Enter' });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Research' }).getAttribute('aria-current')).toBe('true'));
+    // The new Space has no tabs, so the core opened one.
+    await waitFor(() => expect(screen.getByRole('treeitem', { name: /^about:blank/ })).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Personal' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Personal' }).getAttribute('aria-current')).toBe('true'));
+    expect(screen.getByRole('treeitem', { name: /^Example Domain/ }).getAttribute('aria-selected')).toBe('true');
   });
 });

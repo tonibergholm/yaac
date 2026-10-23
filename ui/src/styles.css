@@ -95,16 +95,24 @@ input:focus-visible {
 }
 
 .space {
+  display: block;
   max-width: 100%;
   padding: 2px 8px;
+  border: 0;
   border-radius: 999px;
+  background: transparent;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: default;
 }
 
-.space.active {
+.space:hover {
+  color: var(--fg);
+}
+
+.space[aria-current='true'] {
   background: var(--accent-soft);
   color: var(--fg);
   font-weight: 600;
@@ -388,6 +396,14 @@ ul.list[role='group'] {
 .status {
   padding: 16px 12px;
   color: var(--muted);
+}
+
+.link-status {
+  margin: 0;
+  padding: 6px 8px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .notice {

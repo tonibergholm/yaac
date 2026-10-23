@@ -139,6 +139,9 @@ export function placementForRow(
     return { ...base, parent: target.node.id, before: null };
   }
   if (zone === 'before') {
+    // The node already sits directly before the target. Placing it there is a no-op.
+    const previous = target.siblings[target.index - 1];
+    if (previous?.id === draggedId) return null;
     return { ...base, before: target.node.id };
   }
   const next = target.siblings[target.index + 1];
@@ -176,4 +179,31 @@ export function placementForSiblingStep(
   const after = loc.siblings[loc.index + 2];
   if (!loc.siblings[loc.index + 1]) return null;
   return { ...base, before: after?.id ?? null };
+}
+
+/** Placement that moves a node out of its folder, to just after that folder in the folder's list. */
+export function placementOutOfFolder(snapshot: Snapshot, id: NodeId): Placement | null {
+  const space = activeSpace(snapshot);
+  if (!space) return null;
+  const loc = locate(space, id);
+  if (!loc?.parent) return null;
+  const parent = locate(space, loc.parent.id);
+  if (!parent) return null;
+  return {
+    space: space.id,
+    container: parent.container,
+    parent: parent.parent?.id ?? null,
+    before: parent.siblings[parent.index + 1]?.id ?? null,
+  };
+}
+
+/** Placement that moves a node into the folder directly before it, appended to that folder. */
+export function placementIntoPreviousFolder(snapshot: Snapshot, id: NodeId): Placement | null {
+  const space = activeSpace(snapshot);
+  if (!space) return null;
+  const loc = locate(space, id);
+  if (!loc || loc.parent?.kind === 'split') return null;
+  const previous = loc.index > 0 ? loc.siblings[loc.index - 1] : undefined;
+  if (!previous || previous.kind !== 'folder') return null;
+  return { space: space.id, container: loc.container, parent: previous.id, before: null };
 }

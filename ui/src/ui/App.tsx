@@ -51,6 +51,11 @@ export function App({ sidebar }: { sidebar: Sidebar }) {
       ) : (
         <p class="status">No Space is active.</p>
       )}
+      {state.link === 'reconnecting' ? (
+        <p class="link-status" role="status">
+          Reconnecting to the browser core. The tree shows the last known state.
+        </p>
+      ) : null}
       {notice}
     </div>
   );

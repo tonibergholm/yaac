@@ -6,6 +6,8 @@ import {
   placementAtContainerEnd,
   placementForRow,
   placementForSiblingStep,
+  placementIntoPreviousFolder,
+  placementOutOfFolder,
   visibleRows,
   zoneForRatio,
 } from '../src/model/tree';
@@ -164,7 +166,11 @@ describe('normalizeAddress', () => {
     'data:text/html,<script>alert(1)</script>',
     'app://ui/sidebar.html',
     'about:srcdoc',
-    'localhost:3000',
+    'ftp://example.com',
+    'view-source:https://example.com',
+    'mailto:someone@example.com',
+    'about:1234',
+    'javascript:1',
     'https://',
     'two words',
     '',
@@ -172,5 +178,70 @@ describe('normalizeAddress', () => {
   ])('rejects %j', (input) => {
     const result = normalizeAddress(input);
     expect(result.ok).toBe(false);
+  });
+});
+
+describe('normalizeAddress: host:port, length and characters', () => {
+  it.each([
+    ['localhost:3000', 'http://localhost:3000/'],
+    ['localhost', 'http://localhost/'],
+    ['example.com:8080', 'https://example.com:8080/'],
+    ['192.168.0.10:8080/admin', 'http://192.168.0.10:8080/admin'],
+    ['192.168.1.1', 'http://192.168.1.1/'],
+    ['example.com/a?b=1', 'https://example.com/a?b=1'],
+  ])('reads %j as a host, not a scheme', (input, url) => {
+    expect(normalizeAddress(input)).toStrictEqual({ ok: true, url });
+  });
+
+  it('accepts exactly 2048 characters and rejects 2049', () => {
+    const host = 'https://example.com/';
+    const atLimit = host + 'a'.repeat(2048 - host.length);
+    expect(atLimit.length).toBe(2048);
+    expect(normalizeAddress(atLimit).ok).toBe(true);
+    const overLimit = atLimit + 'a';
+    expect(normalizeAddress(overLimit)).toMatchObject({ ok: false });
+  });
+
+  it.each(['\u0000', 'https://example.com/\u0007', 'https://example.com/\u007f', 'https://exa\tmple.com'])(
+    'rejects control characters in %j',
+    (input) => {
+      expect(normalizeAddress(input).ok).toBe(false);
+    },
+  );
+
+  it.each(['   ', '\t\n', '   '])('rejects whitespace-only input %j', (input) => {
+    expect(normalizeAddress(input).ok).toBe(false);
+  });
+});
+
+describe('placements for keyboard moves and the before-drop no-op', () => {
+  it('a before-drop onto the next sibling of the dragged node is a no-op and is not sent', () => {
+    // pinned: [f, b]. Dragging f before b leaves f where it is.
+    const snap = snapshot({ pinned: [folder('f', 'F', []), tab('b', 'B')] });
+    expect(placementForRow(snap, 'f', 'b', 'before')).toBeNull();
+    expect(placementForRow(snap, 'b', 'f', 'after')).toBeNull();
+  });
+
+  it('moves a node out of its folder to just after that folder', () => {
+    const snap = snapshot({ pinned: [folder('f', 'F', [tab('c', 'C')]), tab('m', 'M')] });
+    expect(placementOutOfFolder(snap, 'c')).toStrictEqual({
+      space: 'space-1',
+      container: 'pinned',
+      parent: null,
+      before: 'm',
+    });
+    expect(placementOutOfFolder(snap, 'm')).toBeNull();
+  });
+
+  it('moves a node into the folder directly above it, and only into a folder', () => {
+    const snap = snapshot({ pinned: [folder('f', 'F', []), tab('m', 'M'), tab('x', 'X')] });
+    expect(placementIntoPreviousFolder(snap, 'm')).toStrictEqual({
+      space: 'space-1',
+      container: 'pinned',
+      parent: 'f',
+      before: null,
+    });
+    expect(placementIntoPreviousFolder(snap, 'x')).toBeNull();
+    expect(placementIntoPreviousFolder(snap, 'f')).toBeNull();
   });
 });

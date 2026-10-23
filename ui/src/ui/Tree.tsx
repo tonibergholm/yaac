@@ -6,6 +6,9 @@ import {
   displayTitle,
   placementAtContainerEnd,
   placementForRow,
+  placementForSiblingStep,
+  placementIntoPreviousFolder,
+  placementOutOfFolder,
   SIDEBAR_CONTAINERS,
   visibleRows,
   zoneForRatio,
@@ -13,7 +16,8 @@ import {
   type SidebarContainer,
   type VisibleRow,
 } from '../model/tree';
-import type { NodeId, NodeView, Snapshot, SpaceView } from '../wire';
+import type { NodeId, NodeView, Placement, Snapshot, SpaceView } from '../wire';
+import { NEW_TAB_BUTTON_ID } from './ids';
 import { ChevronIcon, CloseIcon, FolderIcon, GlobeIcon } from './icons';
 
 const SECTION_LABEL: Record<SidebarContainer, string> = { pinned: 'Pinned', today: 'Today' };
@@ -30,6 +34,7 @@ interface ItemContext {
   selectedId: NodeId | null;
   focusId: NodeId | null;
   register: (id: NodeId, el: HTMLElement | null) => void;
+  close: (id: NodeId) => void;
 }
 
 function cx(...parts: (string | false | null | undefined)[]): string {
@@ -49,7 +54,15 @@ interface TreeProps {
   space: SpaceView;
 }
 
-/** The pinned and today containers as an ARIA tree with roving focus. */
+/**
+ * The pinned and today containers as an ARIA tree with roving focus.
+ *
+ * Keys. Arrows move focus. Right and Left expand, collapse, or move to a child or parent.
+ * Enter or Space selects a tab or toggles a folder. Delete or Backspace closes a tab. F2 renames.
+ * Alt+Shift+Up and Alt+Shift+Down reorder among siblings. Alt+Shift+Left moves out of a folder.
+ * Alt+Shift+Right moves into the folder just above. Alt+Shift+P moves to the end of Pinned, and
+ * Alt+Shift+T to the end of Today.
+ */
 export function Tree({ sidebar, state, snapshot, space }: TreeProps) {
   const rowEls = useRef(new Map<NodeId, HTMLElement>());
   const rows = visibleRows(space, state.collapsed);
@@ -65,6 +78,32 @@ export function Tree({ sidebar, state, snapshot, space }: TreeProps) {
     sidebar.clearFocusRequest();
   });
 
+  const focusAt = (index: number) => {
+    const row = rows[index];
+    if (row) sidebar.setFocus(row.node.id, true);
+  };
+
+  /** Moves a node, then keeps focus on it once the snapshot that contains the move renders. */
+  const moveAndKeepFocus = (id: NodeId, placement: Placement) => {
+    void sidebar.moveNode(id, placement).then((result) => {
+      if (result?.status === 'ok') sidebar.setFocus(id, true, result.body.rev);
+    });
+  };
+
+  /**
+   * Closes a tab and moves focus first, since the focused row is about to leave the DOM. Focus goes
+   * to the next row, else the previous one, else the New tab button.
+   */
+  const closeNode = (id: NodeId) => {
+    const index = rows.findIndex((r) => r.node.id === id);
+    const row = rows[index];
+    if (!row || row.node.kind !== 'tab') return;
+    const neighbour = rows[index + 1] ?? rows[index - 1];
+    if (neighbour) sidebar.setFocus(neighbour.node.id, true);
+    else document.getElementById(NEW_TAB_BUTTON_ID)?.focus();
+    void sidebar.closeTab(id);
+  };
+
   const ctx: ItemContext = {
     sidebar,
     state,
@@ -75,18 +114,7 @@ export function Tree({ sidebar, state, snapshot, space }: TreeProps) {
       if (el) rowEls.current.set(id, el);
       else rowEls.current.delete(id);
     },
-  };
-
-  const focusAt = (index: number) => {
-    const row = rows[index];
-    if (row) sidebar.setFocus(row.node.id, true);
-  };
-
-  /** Alt+Arrow: moves the node, then keeps focus on it once the snapshot containing the move renders. */
-  const moveAndKeepFocus = (id: NodeId, direction: -1 | 1) => {
-    void sidebar.moveStep(id, direction).then((result) => {
-      if (result?.status === 'ok') sidebar.setFocus(id, true, result.body.rev);
-    });
+    close: closeNode,
   };
 
   const activate = (row: VisibleRow) => {
@@ -98,6 +126,32 @@ export function Tree({ sidebar, state, snapshot, space }: TreeProps) {
     }
   };
 
+  /** Alt+Shift chords: keyboard moves. Each one sends an exact `move_node` placement, or nothing. */
+  const moveByKey = (event: TargetedKeyboardEvent<HTMLDivElement>, id: NodeId): boolean => {
+    let placement: Placement | null;
+    switch (event.key) {
+      case 'ArrowUp':
+        placement = placementForSiblingStep(snapshot, id, -1);
+        break;
+      case 'ArrowDown':
+        placement = placementForSiblingStep(snapshot, id, 1);
+        break;
+      case 'ArrowLeft':
+        placement = placementOutOfFolder(snapshot, id);
+        break;
+      case 'ArrowRight':
+        placement = placementIntoPreviousFolder(snapshot, id);
+        break;
+      default:
+        // `event.code` is used for letters because Alt changes `event.key` on macOS.
+        if (event.code === 'KeyP') placement = placementAtContainerEnd(snapshot, id, 'pinned');
+        else if (event.code === 'KeyT') placement = placementAtContainerEnd(snapshot, id, 'today');
+        else return false;
+    }
+    if (placement) moveAndKeepFocus(id, placement);
+    return true;
+  };
+
   const onKeyDown = (event: TargetedKeyboardEvent<HTMLDivElement>) => {
     const target = event.target;
     if (!(target instanceof HTMLElement) || target.getAttribute('role') !== 'treeitem') return;
@@ -105,17 +159,22 @@ export function Tree({ sidebar, state, snapshot, space }: TreeProps) {
     const index = rows.findIndex((r) => r.node.id === id);
     const row = rows[index];
     if (!row) return;
+
+    if (event.altKey && event.shiftKey) {
+      if (moveByKey(event, row.node.id)) event.preventDefault();
+      return;
+    }
+    // Plain Alt chords are not bound. Ignore them so they do not act as plain arrows.
+    if (event.altKey) return;
+
     const folder = row.node.kind === 'folder';
     const collapsed = state.collapsed.has(row.node.id);
-
     switch (event.key) {
       case 'ArrowDown':
-        if (event.altKey) moveAndKeepFocus(row.node.id, 1);
-        else focusAt(index + 1);
+        focusAt(index + 1);
         break;
       case 'ArrowUp':
-        if (event.altKey) moveAndKeepFocus(row.node.id, -1);
-        else focusAt(index - 1);
+        focusAt(index - 1);
         break;
       case 'Home':
         focusAt(0);
@@ -141,9 +200,7 @@ export function Tree({ sidebar, state, snapshot, space }: TreeProps) {
         break;
       case 'Delete':
       case 'Backspace':
-        if (row.node.kind !== 'tab') return;
-        sidebar.setFocus((rows[index + 1] ?? rows[index - 1])?.node.id ?? null, true);
-        void sidebar.closeTab(row.node.id);
+        closeNode(row.node.id);
         break;
       case 'F2':
         sidebar.startRename(row.node.id);
@@ -304,7 +361,7 @@ function TreeItem({ node, level, index, setSize, ctx }: TreeItemProps) {
         {renaming ? (
           <RenameField
             initial={node.title}
-            onDone={(value) => sidebar.finishRename(node.id, value)}
+            onDone={(value, refocus) => sidebar.finishRename(node.id, value, refocus)}
           />
         ) : (
           <span class="title" title={node.url ?? undefined}>
@@ -321,7 +378,7 @@ function TreeItem({ node, level, index, setSize, ctx }: TreeItemProps) {
             aria-label={`Close ${label}`}
             onClick={(event) => {
               event.stopPropagation();
-              void sidebar.closeTab(node.id);
+              ctx.close(node.id);
             }}
           >
             <CloseIcon />
@@ -351,8 +408,12 @@ function dropHintFor(drop: DropHint | null, id: NodeId): DropZone | null {
   return drop.zone;
 }
 
-/** Inline title editor. Enter or blur commits, Escape cancels. Keys stop here so the tree does not act on them. */
-function RenameField({ initial, onDone }: { initial: string; onDone: (value: string | null) => void }) {
+/**
+ * Inline title editor. Enter commits and focus returns to the row. Escape cancels and focus returns.
+ * Blur commits. Focus returns only when focus went nowhere (`relatedTarget` is null), so a click on
+ * another control keeps focus there. Keys stop here so the tree does not act on them.
+ */
+function RenameField({ initial, onDone }: { initial: string; onDone: (value: string | null, refocus: boolean) => void }) {
   const [value, setValue] = useState(initial);
   const finished = useRef(false);
   const input = useRef<HTMLInputElement>(null);
@@ -362,10 +423,10 @@ function RenameField({ initial, onDone }: { initial: string; onDone: (value: str
     input.current?.select();
   }, []);
 
-  const finish = (commit: boolean) => {
+  const finish = (commit: boolean, refocus: boolean) => {
     if (finished.current) return;
     finished.current = true;
-    onDone(commit ? value : null);
+    onDone(commit ? value : null, refocus);
   };
 
   return (
@@ -380,14 +441,14 @@ function RenameField({ initial, onDone }: { initial: string; onDone: (value: str
         event.stopPropagation();
         if (event.key === 'Enter') {
           event.preventDefault();
-          finish(true);
+          finish(true, true);
         } else if (event.key === 'Escape') {
           event.preventDefault();
-          finish(false);
+          finish(false, true);
         }
       }}
       onClick={(event) => event.stopPropagation()}
-      onBlur={() => finish(true)}
+      onBlur={(event) => finish(true, event.relatedTarget === null)}
     />
   );
 }
