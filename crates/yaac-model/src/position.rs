@@ -256,6 +256,13 @@ mod tests {
                 .as_str(),
             "X"
         );
+        // "V" is a prefix of "V0V", so the key must sit inside the zero run below "V0V".
+        assert_eq!(
+            Position::between(Some(&key("V")), Some(&key("V0V")))
+                .unwrap()
+                .as_str(),
+            "V0U"
+        );
     }
 
     #[test]
@@ -353,6 +360,24 @@ mod tests {
                 prop_assert!(previous < next && next < upper);
                 prop_assert!(
                     next.as_str().len() <= previous.as_str().len().max(upper.as_str().len()) + 1
+                );
+                previous = next;
+            }
+        }
+
+        #[test]
+        fn repeated_insertion_after_one_key_never_fails(
+            lower in key_strategy(),
+            upper in key_strategy(),
+            steps in 1usize..300,
+        ) {
+            prop_assume!(lower < upper);
+            let mut previous = upper.clone();
+            for _ in 0..steps {
+                let next = Position::between(Some(&lower), Some(&previous)).unwrap();
+                prop_assert!(lower < next && next < previous);
+                prop_assert!(
+                    next.as_str().len() <= lower.as_str().len().max(previous.as_str().len()) + 1
                 );
                 previous = next;
             }

@@ -117,7 +117,7 @@ impl TreeState {
     }
 
     /// Inserts one node. A split cannot be inserted this way, because it needs two to four tab
-    /// children at once; use `insert_split`. A tab or folder placed under a split must be a tab,
+    /// children at once; use `insert_split`. A node placed under a split must be a tab,
     /// and the split must have room for it.
     pub fn insert(&mut self, node: Node) -> Result<(), TreeError> {
         if self.nodes.contains_key(&node.id) {
@@ -1088,34 +1088,42 @@ mod tests {
         assert!(tree.renumber_children(c, None).is_empty());
     }
 
-    #[test]
-    fn repeated_insertion_at_one_spot_renumbers_instead_of_failing() {
-        let c = ContainerId::new();
-        let anchor = tab(c, None, "W");
-        let mut tree = tree_of(vec![anchor.clone()]);
-        for _ in 0..400 {
-            let position = match tree.position_for(c, None, Some(anchor.id)) {
-                Ok(position) => position,
-                Err(TreeError::PositionExhausted) => {
-                    tree.renumber_children(c, None);
-                    tree.position_for(c, None, Some(anchor.id)).unwrap()
-                }
-                Err(other) => panic!("unexpected error: {other}"),
-            };
-            assert!(position.as_str().len() <= 32);
-            tree.insert(node(
-                NodeId::new(),
-                c,
-                None,
-                NodeKind::Tab,
-                position.as_str(),
-            ))
-            .unwrap();
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        /// Insertion at one spot never fails. A long sibling makes exhaustion happen at once, and
+        /// every later key stays within 32 characters because exhaustion triggers a renumber.
+        #[test]
+        fn repeated_insertion_at_one_spot_renumbers_and_keeps_keys_short(
+            before_first in any::<bool>(),
+            rounds in 100usize..200,
+        ) {
+            let c = ContainerId::new();
+            let long = format!("V{}", "z".repeat(31));
+            let first = tab(c, None, &long);
+            let second = tab(c, None, "W");
+            let mut tree = tree_of(vec![first.clone(), second.clone()]);
+            let anchor = if before_first { first.id } else { second.id };
+            let mut renumbered = false;
+            for _ in 0..rounds {
+                let position = match tree.position_for(c, None, Some(anchor)) {
+                    Ok(position) => position,
+                    Err(TreeError::PositionExhausted) => {
+                        renumbered = true;
+                        tree.renumber_children(c, None);
+                        tree.position_for(c, None, Some(anchor))
+                            .map_err(|error| TestCaseError::fail(error.to_string()))?
+                    }
+                    Err(error) => return Err(TestCaseError::fail(error.to_string())),
+                };
+                prop_assert!(position.as_str().len() <= 32);
+                tree.insert(node(NodeId::new(), c, None, NodeKind::Tab, position.as_str()))
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            }
+            prop_assert!(renumbered);
+            prop_assert_eq!(tree.len(), rounds + 2);
+            tree.validate().map_err(|error| TestCaseError::fail(error.to_string()))?;
         }
-        tree.validate().unwrap();
-        assert_eq!(tree.len(), 401);
-        let ids: Vec<NodeId> = tree.children(c, None).iter().map(|n| n.id).collect();
-        assert_eq!(ids.last(), Some(&anchor.id));
     }
 
     /// One random operation. `Index` values resolve against the tree's current contents when the
