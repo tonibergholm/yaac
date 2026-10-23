@@ -30,7 +30,7 @@ Kill-switch probe (no tab opened; aside repl "await sleep(60000); console.log('f
   13:09:23 capture: "Aside CLI REPL" panel present, no "Agent Tabs" group (no tab opened by this call).
   13:09:23 aside session stop <that id>: stdout "idle", exit 0.
   13:09:28 repl still running (kill -0 on its pid).
-  13:10:20 repl exited. Stdout "finished-after-60s", stderr "[ok | 60015ms]", stderr empty. The sleep ran to the end, so stop did not interrupt it.
+  13:10:20 repl exited. Stdout "finished-after-60s", then "[ok | 60015ms]" (also on stdout). Stderr empty. The sleep ran to the end, so stop did not interrupt it.
   Session list after: "No sessions."
 
 CLI settings keys (aside settings get, key names only, values not recorded): accountId, defaultProfileId, defaultProfileSelector, saveSessions. No key for external control.
