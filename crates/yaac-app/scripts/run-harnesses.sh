@@ -89,19 +89,30 @@ if [ "$os" = Linux ]; then
     fi
 fi
 
-# PIDs of processes running this bundle's executable. The browser, its zygotes, renderers and GPU
-# process all run the same executable. Linux compares the exact executable path of processes owned
-# by this user. macOS uses pgrep on the bundle path.
+# PIDs of this run's processes: the browser, its zygotes, renderers and GPU process. They run the
+# same executable and inherit this run's HOME. Linux matches the exact executable path, the owner
+# uid and HOME in the environment, so another instance (a dev run, a daily browser) is never
+# matched. macOS uses pgrep on the bundle path for this user.
 app_pids() {
     if [ "$os" = Linux ]; then
         for d in /proc/[0-9]*; do
             [ -O "$d" ] || continue
-            [ "$(readlink "$d/exe" 2>/dev/null)" = "$app_real" ] && echo "${d#/proc/}"
+            [ "$(readlink "$d/exe" 2>/dev/null)" = "$app_real" ] || continue
+            tr '\0' '\n' < "$d/environ" 2>/dev/null | grep -qx "HOME=$HOME" || continue
+            echo "${d#/proc/}"
         done
     else
-        pgrep -f -- "$app" 2>/dev/null
+        pgrep -u "$(id -u)" -f -- "$app" 2>/dev/null
     fi
 }
+
+# A run must not start while a process of this bundle with this HOME is still alive: its leftovers
+# would be counted as this run's and killed.
+if [ -n "$(app_pids)" ]; then
+    echo "run-harnesses: processes of this bundle with this HOME are already running:" >&2
+    app_pids >&2
+    exit 2
+fi
 
 # No process of this bundle may outlive a stage: zygotes and renderers can exit a moment after the
 # browser. Wait up to 10 s, then fail and kill exactly the processes found.
