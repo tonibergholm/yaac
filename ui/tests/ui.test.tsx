@@ -43,8 +43,23 @@ function row(label: string): HTMLElement {
   return el;
 }
 
+// A drag shares one transfer. dragStart creates it, and later events reuse it, as in a browser.
+// setData records the type, so `types` carries the sidebar's MIME type the way Chromium reports it.
+let lastTransfer: ReturnType<typeof dataTransfer> | undefined;
+
 function dataTransfer() {
-  return { setData: vi.fn(), getData: () => '', effectAllowed: 'all', dropEffect: 'none', types: [] };
+  const types: string[] = [];
+  const transfer = {
+    types,
+    setData: (type: string) => {
+      types.push(type);
+    },
+    getData: () => '',
+    effectAllowed: 'all',
+    dropEffect: 'none',
+  };
+  lastTransfer = transfer;
+  return transfer;
 }
 
 function stubRect(el: HTMLElement, height = 100): void {
@@ -62,7 +77,8 @@ function stubRect(el: HTMLElement, height = 100): void {
 }
 
 function dispatchAt(type: 'dragOver' | 'drop', el: Element, clientY: number): boolean {
-  const event = type === 'dragOver' ? createEvent.dragOver(el, { dataTransfer: dataTransfer() }) : createEvent.drop(el, { dataTransfer: dataTransfer() });
+  const transfer = lastTransfer ?? dataTransfer();
+  const event = type === 'dragOver' ? createEvent.dragOver(el, { dataTransfer: transfer }) : createEvent.drop(el, { dataTransfer: transfer });
   Object.defineProperty(event, 'clientY', { value: clientY });
   return fireEvent(el, event);
 }

@@ -17,6 +17,7 @@ import {
   type VisibleRow,
 } from '../model/tree';
 import type { NodeId, NodeView, Placement, Snapshot, SpaceView } from '../wire';
+import { NODE_MIME } from './drag';
 import { NEW_TAB_BUTTON_ID } from './ids';
 import { ChevronIcon, CloseIcon, FolderIcon, GlobeIcon } from './icons';
 
@@ -25,7 +26,6 @@ const EMPTY_LABEL: Record<SidebarContainer, string> = {
   pinned: 'Drop tabs here to pin them',
   today: 'No open tabs',
 };
-const NODE_MIME = 'application/x-yaac-node';
 
 interface ItemContext {
   sidebar: Sidebar;
