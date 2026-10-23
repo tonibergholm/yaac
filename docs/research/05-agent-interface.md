@@ -31,7 +31,7 @@ Repository snapshots used for source reading (shallow clones, read only, in /tmp
 
 Primary sources: https://docs.aside.com/help/developers.md, https://docs.aside.com/help/security.md, https://docs.aside.com/help/tasks.md, https://docs.aside.com/help/privacy.md, https://docs.aside.com/help/passwords.md, https://docs.aside.com/help/password-manager.md, https://docs.aside.com/help/troubleshooting.md, https://docs.aside.com/changelog/native.md, https://aside.com/blog/developers (developer blog dated 2026-06-22), and https://docs.aside.com/llms.txt (the page index). The `.md` variants of the docs pages were fetched directly.
 
-Secondary source: https://github.com/steggdev/aside-browser-mcp (MIT, pushed 2026-08-12). It is a third-party Hermes skill and uses the Aside CLI. Its claims are labeled SECONDARY below.
+Secondary source: https://github.com/steggdev/aside-browser-mcp (MIT, pushed 2026-08-12). It is a third-party Hermes skill and uses the Aside CLI. Its claims are tagged "UNKNOWN (secondary source)" below.
 
 ### 1.1 Documented commands and surfaces
 
@@ -48,8 +48,8 @@ Secondary source: https://github.com/steggdev/aside-browser-mcp (MIT, pushed 202
 ### 1.2 MCP tools, parameters, and REPL API
 
 - MCP tool names and parameter schemas are not documented. (UNKNOWN; experiment: start `aside mcp` and send `tools/list` over stdio, then record the schema.)
-- SECONDARY, steggdev README: the Hermes side exposes a tool named `mcp_aside_repl`, which suggests the Aside MCP server exposes a single `repl` tool (INFERRED from the Hermes naming prefix). The README also lists these REPL functions: `listBrowserTabs()`, `attachBrowserTab(targetId)`, `openTab(url)`, and a Playwright-style page API with `goto`, `click`, `fill`, `evaluate`, `content`, `title`, `url`, `screenshot`, `snapshot`, `frames`, `pdf`, and `locator`. (SECONDARY, https://github.com/steggdev/aside-browser-mcp README)
-- SECONDARY, same README: tabs created with `openTab()` belong to the `aside repl` process and close when the command exits. Attaching to an existing tab and navigating it persists. The README recommends keeping one spare tab open. (SECONDARY, unverified against the app)
+- UNKNOWN (secondary source, steggdev README): the Hermes side exposes a tool named `mcp_aside_repl`, which suggests the Aside MCP server exposes a single `repl` tool (INFERRED from the Hermes naming prefix). The README also lists these REPL functions: `listBrowserTabs()`, `attachBrowserTab(targetId)`, `openTab(url)`, and a Playwright-style page API with `goto`, `click`, `fill`, `evaluate`, `content`, `title`, `url`, `screenshot`, `snapshot`, `frames`, `pdf`, and `locator`. (UNKNOWN, secondary source: https://github.com/steggdev/aside-browser-mcp README)
+- UNKNOWN (secondary source, same README): tabs created with `openTab()` belong to the `aside repl` process and close when the command exits. Attaching to an existing tab and navigating it persists. The README recommends keeping one spare tab open. (not checked against the app)
 
 ### 1.3 Session model
 
@@ -59,7 +59,7 @@ Secondary source: https://github.com/steggdev/aside-browser-mcp (MIT, pushed 202
 
 ### 1.4 Daemon, transport, and connection
 
-- The app runs a "local service". Its log is `.aside/logs/daemon-YYYY-MM-DD.log`. The troubleshooting page names an installation key that protects local data, and says the CLI signs in to the browser with a key stored under the user who runs the browser. (VERIFIED, troubleshooting.md, "Aside keeps restarting" and "CLI cannot open the Windows installation key")
+- The app runs a "local service". Its log is `.aside/logs/daemon-YYYY-MM-DD.log`. The troubleshooting page names an installation key that protects local data, and says that on Windows the CLI signs in to the browser with a key stored under the Windows user who runs the browser. (VERIFIED, troubleshooting.md, "Aside keeps restarting" and "CLI cannot open the Windows installation key")
 - CLI credentials live in `~/.aside/cli/auth.json` unless `ASIDE_CLI_AUTH_PATH` overrides the path. (VERIFIED, developers.md)
 - The transport between the CLI or MCP process and the app is not documented. Port or socket, the socket path, and its permissions are all UNKNOWN. (UNKNOWN; experiment: with the app running on macOS, run `lsof -nP -iTCP -sTCP:LISTEN` and `lsof -U` filtered on the Aside processes, then `ls -l` the socket path.)
 - The app is not installed on this machine, so the experiment has not been run.
@@ -89,7 +89,7 @@ Secondary source: https://github.com/steggdev/aside-browser-mcp (MIT, pushed 202
 ### 1.8 Keeping the user informed
 
 - Tabs used by external agents through MCP or CLI are grouped in one "Agent Tabs" group in the sidebar. (VERIFIED, changelog/native.md, v1.0.914.1)
-- Selecting an agent tab turns it into a regular page. "Take over" returns it to the group when you switch away. (VERIFIED, changelog/native.md)
+- Selecting an agent tab lets you use it as a regular page without pressing Take over. Tabs that were taken over automatically return to the Agent Tabs group when you switch away. (VERIFIED, changelog/native.md, v1.0.914.1)
 - Approval dialogs appear in the Chat section, and they close when they lose focus. (VERIFIED, changelog/native.md)
 - Waiting tasks show a status and can ask for a reply, approval, or app event. (VERIFIED, tasks.md)
 - Stop control: Steer "can adjust" a run and can stop an action. The docs do not describe a hard stop or kill switch. (VERIFIED wording, tasks.md; no hard stop documented)
@@ -176,21 +176,21 @@ Sources: CEF headers from https://github.com/chromiumembedded/cef at 7f8a5ec (20
 - The header says "Usage of the SendDevToolsMessage, ExecuteDevToolsMethod and AddDevToolsMessageObserver methods does not require an active DevTools front-end or remote-debugging session." (VERIFIED, cef_browser.h)
 - `CefDevToolsMessageObserver` has `OnDevToolsMessage`, `OnDevToolsMethodResult`, `OnDevToolsEvent`, and optional `OnDevToolsAgentAttached` and `OnDevToolsAgentDetached`. (VERIFIED, cef_devtools_message_observer.h)
 - Scope: these calls are methods on one `CefBrowser`. The DevTools agent is per browser. Whether `Target.*` or browser-level commands reach other targets through it is UNKNOWN. (UNKNOWN; experiment: call `Target.getTargets` from one browser and check whether it lists other tabs.)
-- cef-rs 154.5.0 binds all of these. The generated macOS arm64 binding declares `execute_dev_tools_method`, `send_dev_tools_message`, `add_dev_tools_message_observer`, and the `DevToolsMessageObserver` wrapper macro. (VERIFIED, `cef-154.5.0+154.0.34/src/bindings/aarch64_apple_darwin.rs` in the cargo registry, lines 12611 to 12624 and 3755 onward)
+- cef-rs 154.5.0 binds all of these. The generated macOS arm64 binding declares `execute_dev_tools_method`, `send_dev_tools_message`, `add_dev_tools_message_observer`, and the `DevToolsMessageObserver` wrapper macro. (VERIFIED, `cef-154.5.0+154.0.34/src/bindings/aarch64_apple_darwin.rs` in the cargo registry, lines 12611 to 12624 and 3697 onward)
 
 ### 3.2 Remote debugging switches
 
 - `CefSettings.remote_debugging_port`: values from 1024 to 65535. The command-line switch is `remote-debugging-port`. A value of 0 selects an ephemeral port, and CEF writes it to `DevToolsActivePort` in the cache directory. (VERIFIED, include/internal/cef_types.h)
 - CEF forwards only the port. `libcef/common/chrome/chrome_main_delegate_cef.cc` lines 332 to 336 append `remote-debugging-port` when the setting is in range. `libcef/` has no reference to `remote-debugging-pipe` (grep of the CEF repository, VERIFIED).
-- Whether Chromium honors `--remote-debugging-pipe` if we pass it to a CEF process is UNKNOWN. Chromium's content layer has a pipe handler (`content/browser/devtools/devtools_pipe_handler.cc`, VERIFIED). The Chrome layer starts it in `RemoteDebuggingServer::Start` (`chrome/browser/devtools/remote_debugging_server.cc` around line 353, VERIFIED). CEF may or may not use that Chrome-layer path. (UNKNOWN; experiment: start a CEF build with `--remote-debugging-pipe` and see whether a pipe is created.)
+- INFERRED, probably works: `--remote-debugging-pipe` should be honored under CEF's Chrome runtime. Chromium's content layer has a pipe handler (`content/browser/devtools/devtools_pipe_handler.cc`, VERIFIED). The Chrome layer starts it in `RemoteDebuggingServer::Start` (`chrome/browser/devtools/remote_debugging_server.cc` around line 353, VERIFIED). The reason: the port and the pipe servers start in the same function, and CEF already relies on that function for `remote-debugging-port` (INFERRED from the CEF switch wiring). CEF's Alloy runtime path is UNKNOWN. (Experiment A3.)
 - cef-rs exposes `remote_debugging_port` in the generated `Settings` binding. (VERIFIED, aarch64_apple_darwin.rs line 520)
 
 ### 3.3 Chrome 136 restriction and CEF
 
 - The change: from Chrome 136, `--remote-debugging-port` and `--remote-debugging-pipe` "will no longer be respected if attempting to debug the default Chrome data directory". The switches must come with `--user-data-dir` pointing at a non-default path. Chrome for Testing keeps the old behavior. Published 2025-03-17. (VERIFIED, https://developer.chrome.com/blog/remote-debugging-port, WebFetch summary)
-- Stated reason: attackers have used remote debugging to extract cookies. The blog does not name infostealers as the reason. (VERIFIED, WebFetch summary)
+- Stated reason: attackers have used remote debugging to extract cookies. The blog says Google watches "the techniques and behaviors used by infostealers", but it does not name infostealers as the reason for this change. (VERIFIED, WebFetch summary)
 - Source: `chrome/browser/devtools/remote_debugging_server.cc` in Chromium main, lines 162 to 182. The default-profile check is compiled only when `BUILDFLAG(GOOGLE_CHROME_BRANDING)` is true. Otherwise it stays off unless a test-only flag is set. The check also runs on the pipe switch. (VERIFIED, source read from gitiles, 2026-10-23)
-- Chromium's default is `is_chrome_branded = false` (`build/config/chrome_build.gni` line 12, VERIFIED, Chromium main). CEF's repository sets no branding override in `tools/` or `libcef/`. CEF patches reference `GOOGLE_CHROME_BRANDING` in crashpad and policy code only (VERIFIED, patch/patches in the CEF repository).
+- Chromium's default is `is_chrome_branded = false` (`build/config/chrome_build.gni` line 12, VERIFIED, Chromium main). CEF's repository sets no branding override in `tools/` or `libcef/`. CEF patches reference `GOOGLE_CHROME_BRANDING` in at least the crashpad and policy patches (VERIFIED, `patch/patches` in the CEF repository, first matches only). The `libcef/`, `tools/`, and `CMakeLists.txt` searches found no branding override (VERIFIED).
 - Conclusion: CEF builds that use Chromium branding should not apply the default-profile check. This is INFERRED for the 156 source and for the 154 pin. (INFERRED)
 - Experiment: run a CEF build with `--remote-debugging-port=9222` and no `--user-data-dir`, then `curl localhost:9222/json/version`. A response means the check is off. (Not run.)
 - Even if the check is off, the design should not depend on it. The rule should be a dedicated profile directory for agent-driven state.
@@ -203,7 +203,7 @@ Sources: CEF headers from https://github.com/chromiumembedded/cef at 7f8a5ec (20
 - The handler hangs off the render handler, which only off-screen (windowless) browsers use. Our Views-based windows are not windowless. So Route B is probably unavailable to us. (INFERRED)
 - The format of the `CefValue` tree is not documented in the header. (UNKNOWN)
 - Decision: use Route A. It does not depend on off-screen rendering.
-- `Page.captureSnapshot` produces MHTML, not an accessibility tree. It is not a candidate for this purpose. (VERIFIED, scope of the CDP Page domain)
+- `Page.captureSnapshot` "Returns a snapshot of the page as a string", with MHTML as the full serialization format. It is not an accessibility tree. (VERIFIED, `browser_protocol.json`, Page domain, read 2026-10-23)
 
 ### 3.5 Request contexts
 
@@ -217,15 +217,16 @@ Sources: CEF headers from https://github.com/chromiumembedded/cef at 7f8a5ec (20
 - Lethal trifecta: an agent is dangerous when it has access to private data, sees untrusted content, and can communicate externally. Simon Willison, 2025-06-16, https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/ (VERIFIED, WebFetch summary)
 - Prompt injection in a logged-in browser: Brave tested Perplexity's Comet. Hidden text on a page made the agent use the user's session, read a one-time code from Gmail, and send both to the attacker. Brave's stated fixes: separate user instructions from page content, check planned actions for alignment, require explicit confirmation for sensitive tasks, and isolate agentic browsing from regular browsing. Published 2025-08-20, https://brave.com/blog/comet-prompt-injection/ (VERIFIED, WebFetch summary). Brave also notes that same-origin policy and CORS do not stop this, because the agent acts with the user's privileges.
 - Anthropic, Claude in Chrome: "Browser use without our safety mitigations showed a 23.6% attack success rate", reduced to 11.2% with mitigations in autonomous mode. On a browser-specific challenge set the rate went "from 35.7% to 0%". Claude asks before "publishing, purchasing, or sharing personal data". Site-level permissions can be set in Settings. Dated 2025-08-25 with updates, https://claude.com/blog/claude-for-chrome (VERIFIED, WebFetch summary; the original anthropic.com URL redirects here)
+- Microsoft Edge, Actions in Edge (support page, no date shown, read 2026-10-23, WebFetch summary): the feature is "experimental" and may be "affected by malicious hidden instructions on web pages". It "may also ask you to approve a site if it doesn't seem directly related to your task", and "Copilot will ask for your attention and supervision for certain actions". https://support.microsoft.com/en-gb/topic/copilot-actions-in-edge-5ed5e17e-42df-40a3-984a-20420eba86e2 (VERIFIED, WebFetch summary). One search for a Microsoft security blog post on this (2026-10-23, "Microsoft Edge Copilot Mode agent actions prompt injection security blog microsoft.com") found none. (UNKNOWN for a Microsoft security post)
 - Google Chrome, agentic browsing (2025-12-08): a User Alignment Critic reviews each planned action, read-only origins and read-writable origins are separated, the agent asks for confirmation before certain sensitive sites, and the page says "logged-in sites vulnerable to data exfiltration" when the agent runs on a local browser. https://blog.google/security/architecting-security-for-agentic/ (VERIFIED, WebFetch summary)
-- OpenAI, ChatGPT Atlas: the primary post returned 403 to WebFetch. A secondhand report quotes the CISO's description of prompt injection as "a frontier, unsolved security problem" and OpenAI's recommendation to use logged-out mode unless the task needs the user's accounts. (UNKNOWN for primary text; SECONDARY through search results only, https://simonwillison.net/2025/Oct/22/openai-ciso-on-atlas/ and others)
+- OpenAI, ChatGPT Atlas: the primary post returned 403 to WebFetch. A secondhand report quotes the CISO's description of prompt injection as "a frontier, unsolved security problem" and OpenAI's recommendation to use logged-out mode unless the task needs the user's accounts. (UNKNOWN for primary text; UNKNOWN (secondary source) through search results only, https://simonwillison.net/2025/Oct/22/openai-ciso-on-atlas/ and others)
 - WebMCP spec: prompt injection is the agent's problem to solve, and the spec cannot enforce it. (VERIFIED, index.bs)
 
 ### 4.2 Exposed debugging ports
 
 - Any local process can use a remote-debugging port. Chrome DevTools MCP's docs say "Any application on your machine can connect to this port and control the browser." agent-browser's README says the same. (VERIFIED, both READMEs)
 - Host header check: Chromium's DevTools HTTP handler serves only requests whose `Host` header is empty, an IP address, or a localhost name. Other requests get HTTP 500. This is the check that blocks DNS rebinding against the port. (VERIFIED, content/browser/devtools/devtools_http_handler.cc, `RequestIsSafeToServe` and `OnHttpRequest`, Chromium main)
-- Origin check on WebSocket: when an `Origin` header is present and is not same-origin and not in `--remote-allow-origins`, the handshake is rejected. Requests with no `Origin` header are not rejected. Browsers always send `Origin` on WebSocket handshakes. A local program usually does not, so the check does not stop local programs. (VERIFIED, devtools_http_handler.cc around lines 838 to 860)
+- Origin check on WebSocket: when an `Origin` header is present and is not same-origin and not in `--remote-allow-origins`, the handshake is rejected. Requests with no `Origin` header are not rejected. Browsers send `Origin` on WebSocket handshakes (INFERRED from browser behavior; RFC 6455 section 4.1 is the background, not fetched in this session). A local program usually does not, so the check does not stop local programs. (VERIFIED, devtools_http_handler.cc around lines 838 to 860)
 - Playwright MCP uses the same idea in its HTTP mode: `--allowed-hosts` (VERIFIED, README).
 - Chrome 136 changed the default-profile behavior (section 3.3).
 - Our conclusion: the Host check and the Origin check protect a port from web pages. They do not protect it from local processes. A Unix socket with filesystem permissions protects against other local users, and it is not reachable from a web page at all.
@@ -240,6 +241,7 @@ Sources: CEF headers from https://github.com/chromiumembedded/cef at 7f8a5ec (20
 | browser-use | `allowed_domains`, `prohibited_domains` | none documented | none documented | `sensitive_data` placeholders |
 | Aside | permission modes Read only, Guard, Full access; Allow, Ask, Deny per tool | task-dependent approval | not documented | Password values hidden from agent. Incognito blocks password manager. |
 | WebMCP | `exposedTo`, Permissions Policy `tools` | hints only (`consequentialHint`) | not specified | Spec says the agent is responsible. |
+| Edge Actions in Edge (experimental) | trusted-site limits, high-risk site blocking, per-site approval | supervision prompts | not documented | Microsoft support page (WebFetch summary) |
 | Google Chrome agent | origin sets, User Alignment Critic | confirmation for sensitive sites | not documented | Describes the layers, not an API. |
 
 ### 4.4 Design requirements for yaac
@@ -277,7 +279,7 @@ R13. Profile separation. Agent-driven state lives in a dedicated context. Writes
 
 ### 5.1 Where the surface lives
 
-Option A: a Rust core command API. The core exposes typed commands over the Unix socket. The web UI keeps its existing IPC for the sidebar. `yaac <cmd>` and `yaac mcp` are clients. Advantages: one enforcement point for grants, confirmations, audit, and kill switch. Space and tab state already lives in the core, so tool results match the sidebar. Cost: we write the socket protocol and the client.
+Option A: a Rust core command API. The core exposes typed commands over the Unix socket. The web UI and the external clients send the same typed command enum to one dispatcher. Only the transport differs: the web UI uses CEF IPC, and external clients use the Unix socket. `yaac <cmd>` and `yaac mcp` are clients. Advantages: one enforcement point for grants, confirmations, audit, and kill switch. Space and tab state already lives in the core, so tool results match the sidebar. Cost: we write the socket protocol and the client.
 
 Option B: a CDP proxy. A process sits between agents and CEF's DevTools endpoint. Advantages: fastest to ship, and existing MCP servers can be reused. Costs: CDP has no concept of Spaces, the enforcement point is outside the core, and we depend on a remote debugging port, which section 4.2 shows is the risky part.
 
@@ -331,7 +333,7 @@ GPL-3.0 compatibility per the FSF license list (https://www.gnu.org/licenses/lic
 | microsoft/playwright-cli | Apache-2.0 | repository license API, 2026-10-23 | Yes | Same |
 | vercel-labs/agent-browser | Apache-2.0 | LICENSE, 2026-10-23 | Yes | Same |
 | browser-use/browser-use | MIT | LICENSE, 2026-10-23 | Yes | Keep the copyright notice |
-| ChromeDevTools/devtools-protocol (protocol JSON) | BSD-3-Clause | repository license API, 2026-10-23 | Yes (INFERRED; the FSF list was not checked for BSD-3 specifically) | Use the protocol definition as data. |
+| ChromeDevTools/devtools-protocol (protocol JSON) | BSD-3-Clause | repository license API, 2026-10-23 | Yes (VERIFIED: FSF list, #ModifiedBSD, "compatible with the GNU GPL") | Use the protocol definition as data. |
 | webmachinelearning/webmcp | W3C Software and Document License per README; repository API reports NOASSERTION | README and API, 2026-10-23 | Yes for the software notice (FSF) | Spec text, not code. |
 | steggdev/aside-browser-mcp (secondary) | MIT | repository license API, 2026-10-23 | Yes | Secondary only. Not read beyond the README. |
 | Aside (aside.com, Aside Browser and CLI) | Not public. The CLI is distributed as a binary. | install page and docs, 2026-10-23 | Not applicable | Observed behavior and docs only. No code, assets, or binaries read or copied. |
@@ -340,7 +342,7 @@ Recommendation: design from the observed behavior and the protocol definitions. 
 
 ## Verdict
 
-Recommended v1 scope: a Rust core command API served over a per-user Unix socket, with Space-scoped grants and a kill switch and audit log in v1. Ship one binary with `yaac <cmd>` and `yaac mcp`. Expose about 15 tools: spaces and tabs, navigate and wait, snapshot with refs, text, screenshot, console, click, fill, press, and select. Keep `evaluate` and `download` behind the privileged scope with confirmation. No cookies, no raw CDP, no TCP port.
+Recommended v1 scope: a Rust core command API served over a per-user Unix socket, with Space-scoped grants and a kill switch and audit log in v1. Ship one binary with `yaac <cmd>` and `yaac mcp`. Expose 15 tools plus 2 privileged tools: spaces and tabs, navigate and wait, snapshot with refs, text, screenshot, console, click, fill, press, and select. Keep `evaluate` and `download` behind the privileged scope with confirmation. No cookies, no raw CDP, no TCP port.
 
 Top three risks:
 
@@ -359,18 +361,19 @@ Open questions for the owner:
 
 Experiments that settle the UNKNOWN items (none run yet):
 
-- E1: `ExecuteDevToolsMethod("Target.getTargets")` from one CEF browser. Settles whether the DevTools scope reaches other tabs.
-- E2: CEF with `--remote-debugging-port=9222` and no `--user-data-dir`, then `curl localhost:9222/json/version`. Settles the Chrome 136 question for our build.
-- E3: CEF with `--remote-debugging-pipe`. Settles whether pipe mode works under CEF.
-- E4: `Accessibility.getFullAXTree` on a cold page, then with `enable`. Settles the enable requirement, and with timing, the cost.
-- E5: Aside installed on macOS, `lsof` on the daemon during `aside mcp`. Settles Aside's transport.
-- E6: `tools/list` on `aside mcp` over stdio. Settles Aside's tool schema.
-- E7: two `CefRequestContext` objects, one cookie set. Settles isolation for Spaces.
-- E8: snapshot size in bytes and tokens for five pages, with and without verbose. Settles the token claim.
+- A1: `ExecuteDevToolsMethod("Target.getTargets")` from one CEF browser. Settles whether the DevTools scope reaches other tabs.
+- A2: CEF with `--remote-debugging-port=9222` and no `--user-data-dir`, then `curl localhost:9222/json/version`. Settles the Chrome 136 question for our build.
+- A3: CEF with `--remote-debugging-pipe`. Settles whether pipe mode works under CEF.
+- A4: `Accessibility.getFullAXTree` on a cold page, then with `enable`. Settles the enable requirement, and with timing, the cost.
+- A5: Aside installed on macOS, `lsof` on the daemon during `aside mcp`. Settles Aside's transport.
+- A6: `tools/list` on `aside mcp` over stdio. Settles Aside's tool schema.
+- A7: two `CefRequestContext` objects, one cookie set. Settles isolation for Spaces.
+- A8: snapshot size in bytes and tokens for five pages, with and without verbose. Settles the token claim.
 
 Not verified:
 
 - OpenAI's primary Atlas post (403 on fetch). Only secondhand reporting was read.
+- Microsoft's own Edge security post (not found in one search). The Actions in Edge support page was read through WebFetch.
 - Playwright CLI transport (README only).
 - agent-browser socket file permissions (directory logic read, listener code not read).
 - Anthropic, Google, and Brave quotes come from WebFetch summaries, not from the full pages.
