@@ -3,6 +3,7 @@
 //! features that need them.
 
 use crate::{AppPaths, Platform};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 pub struct LinuxPlatform;
@@ -34,17 +35,56 @@ impl LinuxEnv {
         // SAFETY: getuid takes no arguments, has no preconditions and cannot fail.
         let uid = unsafe { libc::getuid() };
         let var = |key: &str| std::env::var_os(key).map(PathBuf::from);
+        // A relative HOME is not a home directory: the password database is asked instead.
+        let home = var("HOME")
+            .filter(|p| p.is_absolute())
+            .or_else(|| passwd_home(uid));
+        // A relative TMPDIR is ignored, as for the XDG variables.
+        let tmp = var("TMPDIR")
+            .filter(|p| p.is_absolute())
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
         LinuxEnv {
-            home: var("HOME"),
+            home,
             xdg_config_home: var("XDG_CONFIG_HOME"),
             xdg_data_home: var("XDG_DATA_HOME"),
             xdg_cache_home: var("XDG_CACHE_HOME"),
             xdg_state_home: var("XDG_STATE_HOME"),
             xdg_runtime_dir: var("XDG_RUNTIME_DIR"),
-            tmp: std::env::temp_dir(),
+            tmp,
             uid,
         }
     }
+}
+
+/// The home directory of `uid` from the password database (`getpwuid_r`), if it is absolute.
+fn passwd_home(uid: u32) -> Option<PathBuf> {
+    // The size the C library asks for; fall back to a generous buffer when it does not say.
+    // SAFETY: sysconf takes an integer constant and has no preconditions.
+    let size = match unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) } {
+        n if n > 0 => n as usize,
+        _ => 16 * 1024,
+    };
+    let mut buffer = vec![0u8; size];
+    // SAFETY: a zeroed passwd is a valid out-parameter; getpwuid_r writes into `buffer` and sets
+    // `result` to point at `pwd` on success, or to null when there is no entry.
+    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    let status = unsafe {
+        libc::getpwuid_r(
+            uid,
+            &mut pwd,
+            buffer.as_mut_ptr().cast::<libc::c_char>(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if status != 0 || result.is_null() || pwd.pw_dir.is_null() {
+        return None;
+    }
+    // SAFETY: on success pw_dir is a NUL-terminated string inside `buffer`, which is alive here.
+    let dir = unsafe { std::ffi::CStr::from_ptr(pwd.pw_dir) };
+    let path = PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes()));
+    path.is_absolute().then_some(path)
 }
 
 /// The XDG base directory spec: a relative or empty value is invalid and must be ignored.
@@ -136,6 +176,16 @@ mod tests {
         assert_eq!(paths.cache, PathBuf::from("/x/cache/yaac"));
         assert_eq!(paths.logs, PathBuf::from("/x/state/yaac"));
         assert_eq!(paths.runtime, PathBuf::from("/run/user/1000/yaac"));
+    }
+
+    #[test]
+    fn the_password_database_gives_an_absolute_home_when_it_has_an_entry() {
+        // Containers may have no entry for the current uid; then there is nothing to check.
+        // SAFETY: getuid takes no arguments and cannot fail.
+        let uid = unsafe { libc::getuid() };
+        if let Some(home) = passwd_home(uid) {
+            assert!(home.is_absolute(), "{}", home.display());
+        }
     }
 
     #[test]

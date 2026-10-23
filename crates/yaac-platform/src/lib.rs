@@ -59,14 +59,10 @@ impl AppPaths {
 pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
     let uid = current_uid();
     let base = private_base(path);
-    // Checked before anything is created: a link in the path must not be followed for creation.
-    reject_symlinks_below(path, base.as_deref())?;
-    if std::fs::symlink_metadata(path).is_err_and(|e| e.kind() == io::ErrorKind::NotFound) {
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent)?;
-        }
-        DirBuilder::new().mode(0o700).create(path)?;
-    }
+    // Checked before anything is created: a link in the path must not be followed for creation, and
+    // no component below the base may belong to someone else.
+    check_components_below(path, base.as_deref(), uid)?;
+    create_missing(path, base.as_deref())?;
     let dir = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
@@ -94,22 +90,33 @@ pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// `$HOME`, `$TMPDIR` or the system temp directory, whichever the path lies below. The temp
-/// directory is read from `std::env::temp_dir`, which falls back to `/tmp` when `$TMPDIR` is unset
-/// (the usual case on Linux). Symlinks are checked below that base only: the system's own links
-/// above it (on macOS `/var` is a link) are not the user's to control.
+/// `$HOME`, `$TMPDIR` or the system temp directory, whichever the path lies below. Only absolute
+/// values count: a relative `HOME` or `TMPDIR` is ignored (XDG base directory spec). The temp
+/// directory falls back to `/tmp` when `$TMPDIR` is unset or relative. Symlinks are checked below
+/// that base only: the system's own links above it (on macOS `/var` is a link) are not the user's
+/// to control.
 fn private_base(path: &Path) -> Option<PathBuf> {
-    let from_env = ["HOME", "TMPDIR"]
+    let bases: Vec<PathBuf> = ["HOME", "TMPDIR"]
         .iter()
-        .filter_map(|key| std::env::var_os(key).map(PathBuf::from));
-    from_env
-        .chain(std::iter::once(std::env::temp_dir()))
-        .filter(|base| path.starts_with(base))
-        .max_by_key(|base| base.as_os_str().len())
+        .filter_map(|key| std::env::var_os(key).map(PathBuf::from))
+        .filter(|p| p.is_absolute())
+        .chain(std::iter::once(PathBuf::from("/tmp")))
+        .collect();
+    private_base_in(path, &bases)
 }
 
-/// Refuses a symlink in any component of `path` below `base`, the leaf included.
-fn reject_symlinks_below(path: &Path, base: Option<&Path>) -> io::Result<()> {
+/// The longest of `bases` that `path` lies below. Pure, so it can be tested.
+fn private_base_in(path: &Path, bases: &[PathBuf]) -> Option<PathBuf> {
+    bases
+        .iter()
+        .filter(|base| path.starts_with(base))
+        .max_by_key(|base| base.as_os_str().len())
+        .cloned()
+}
+
+/// Refuses a symlink in any component of `path` below `base` (the leaf included), and a component
+/// below `base` that the current user does not own. Components that do not exist yet are fine.
+fn check_components_below(path: &Path, base: Option<&Path>, uid: u32) -> io::Result<()> {
     let Some(base) = base else { return Ok(()) };
     let mut current = PathBuf::new();
     for component in path.components() {
@@ -124,11 +131,43 @@ fn reject_symlinks_below(path: &Path, base: Option<&Path>) -> io::Result<()> {
                     current.display()
                 )));
             }
+            Ok(meta) if meta.uid() != uid => {
+                return Err(io::Error::other(format!(
+                    "{} is not owned by the current user",
+                    current.display()
+                )));
+            }
             Ok(_) => {}
             // Not created yet: nothing below it exists either.
             Err(error) if error.kind() == io::ErrorKind::NotFound => break,
             Err(error) => return Err(error),
         }
+    }
+    Ok(())
+}
+
+/// Creates the missing components of `path`. A component below `base` is private data and gets
+/// mode 0700. Components above `base` (for example `~/.local` when only `~/.local/state/yaac` is
+/// missing) keep the default mode: they are not ours to make private.
+fn create_missing(path: &Path, base: Option<&Path>) -> io::Result<()> {
+    let mut missing = Vec::new();
+    let mut current = Some(path);
+    while let Some(dir) = current.filter(|d| !d.as_os_str().is_empty()) {
+        match std::fs::symlink_metadata(dir) {
+            Ok(_) => break,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                missing.push(dir);
+                current = dir.parent();
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    for dir in missing.iter().rev() {
+        let private =
+            base.is_some_and(|b| dir.starts_with(b) && dir.as_os_str().len() > b.as_os_str().len());
+        DirBuilder::new()
+            .mode(if private { 0o700 } else { 0o755 })
+            .create(dir)?;
     }
     Ok(())
 }
@@ -247,6 +286,35 @@ mod tests {
         std::fs::write(&file, b"x").expect("file");
         assert!(ensure_private_dir(&file).is_err());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn components_created_below_the_base_are_private() {
+        let root = scratch("intermediate");
+        let leaf = root.join("a").join("b").join("c");
+        ensure_private_dir(&leaf).expect("create");
+        assert_eq!(mode(&root.join("a")), 0o700, "intermediate a");
+        assert_eq!(mode(&root.join("a").join("b")), 0o700, "intermediate b");
+        assert_eq!(mode(&leaf), 0o700);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_longest_matching_base_wins() {
+        let bases = [
+            PathBuf::from("/home/u"),
+            PathBuf::from("/home/u/.cache"),
+            PathBuf::from("/tmp"),
+        ];
+        assert_eq!(
+            private_base_in(Path::new("/home/u/.cache/yaac"), &bases),
+            Some(PathBuf::from("/home/u/.cache"))
+        );
+        assert_eq!(
+            private_base_in(Path::new("/var/x"), &bases),
+            None,
+            "outside every base"
+        );
     }
 
     #[test]
