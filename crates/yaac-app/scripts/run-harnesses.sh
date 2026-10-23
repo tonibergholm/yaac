@@ -102,7 +102,7 @@ if [ "$os" = Linux ]; then
 fi
 
 # Ticks (1/100 s) since boot, now. A stage records it before it starts a process.
-now_ticks() { awk '{ print int($1 * 100) }' /proc/uptime; }
+now_ticks() { [ "$os" = Linux ] && awk '{ print int($1 * 100) }' /proc/uptime || echo 0; }
 
 # Start time of a process, in ticks since boot (field 22 of /proc/PID/stat).
 start_ticks() { sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | awk '{ print $20 }'; }
