@@ -76,3 +76,41 @@ impl fmt::Display for ViewId {
         write!(f, "view-{}", self.0)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fmt::Debug;
+
+    fn assert_round_trip<T>(value: T)
+    where
+        T: Serialize + for<'de> Deserialize<'de> + PartialEq + Debug,
+    {
+        let json = serde_json::to_string(&value).unwrap();
+        assert_eq!(serde_json::from_str::<T>(&json).unwrap(), value);
+    }
+
+    #[test]
+    fn uuid_ids_serialize_as_plain_strings_and_round_trip() {
+        let node = NodeId::new();
+        assert_eq!(serde_json::to_string(&node).unwrap(), format!("\"{node}\""));
+        assert_round_trip(node);
+        assert_round_trip(ProfileId::new());
+        assert_round_trip(SpaceId::new());
+        assert_round_trip(ContainerId::new());
+        assert_round_trip(WindowId::new());
+    }
+
+    #[test]
+    fn view_id_round_trips_as_a_number() {
+        assert_eq!(serde_json::to_string(&ViewId(7)).unwrap(), "7");
+        assert_round_trip(ViewId(7));
+    }
+
+    #[test]
+    fn uuid_ids_parse_from_their_string_form() {
+        let node = NodeId::new();
+        assert_eq!(node.to_string().parse::<NodeId>().unwrap(), node);
+        assert!("not-a-uuid".parse::<NodeId>().is_err());
+    }
+}
