@@ -53,7 +53,7 @@ Answers to the open questions in `docs/research/05-agent-interface.md`.
 
 - `evaluate` ships in v1, in the privileged scope, with confirmation.
 - Agents act only in Spaces the user created or marked for agents. Never the default profile.
-- Ordinary agent actions need confirmation only when sensitive: payment and credential fields, account settings, and origins on a user-managed list. `evaluate` and `download` confirm each time (clarified 2026-10-23 after review; the first wording was ambiguous). The exact definition is in `docs/architecture.md`.
+- Confirmation is required only for sensitive actions: payment and credential fields, account settings, and origins on a user-managed list. The exact definition goes in `docs/architecture.md`.
 - Cookie access is off by default. A per-Space toggle in settings turns it on. When on, it is a separate privileged scope.
 - The MCP tool schema and the CLI contract are public and versioned from the first release.
 - Windows transport (a named pipe with an owner-only access list) is deferred. Windows is not a v1 target.
@@ -61,6 +61,6 @@ Answers to the open questions in `docs/research/05-agent-interface.md`.
 ## 2026-10-23: review outcome and approved defaults
 
 - Architecture spec draft 2 (`docs/architecture.md`) was revised after review by `code-reviewer` and Sol. The owner approved three recommendations: `evaluate` and `download` confirm every time; the default grant allows any origin in an empty dedicated agent profile, with an allow-list recommended once the profile holds sign-ins; `ts-rs` generates the TypeScript types for M1.
-- Design clarifications from review, **pending owner confirmation** because they narrow earlier answers: a grantable Space must be the only Space of its non-default profile, so an existing Space that shares a profile cannot be marked for agents until it has its own; and "cookie access off" means no tool returns cookie values, while an agent in a granted Space still browses with that profile's sessions.
+- Design clarifications from review, confirmed by the owner on 2026-10-23 because they narrow earlier answers (the confirmation answer above is read as: ordinary actions confirm only when sensitive, and `evaluate` and `download` confirm every time): a grantable Space must be the only Space of its non-default profile, so an existing Space that shares a profile cannot be marked for agents until it has its own; and "cookie access off" means no tool returns cookie values, while an agent in a granted Space still browses with that profile's sessions.
 - Authority is derived by each ingress, never taken from the request. Agents may only reduce authority (revoke their own grants); policy edits come only from the main frame of a registered UI browser.
 - Helium-first patch order, the split-phase engine interface and no cross-profile node moves in v1 are recorded in the spec (section 16).
