@@ -1,0 +1,16 @@
+{
+  "result": {
+    "protocolVersion": "2025-06-18",
+    "capabilities": {
+      "tools": {
+        "listChanged": true
+      }
+    },
+    "serverInfo": {
+      "name": "aside",
+      "version": "1.26.1023.1115"
+    }
+  },
+  "jsonrpc": "2.0",
+  "id": 1
+}

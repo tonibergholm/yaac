@@ -1,0 +1,112 @@
+{
+  "result": {
+    "tools": [
+      {
+        "name": "browser_profiles",
+        "description": "<omitted: Aside prompt or documentation prose, not copied>",
+        "inputSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {}
+        },
+        "execution": {
+          "taskSupport": "forbidden"
+        }
+      },
+      {
+        "name": "repl",
+        "description": "<omitted: Aside prompt or documentation prose, not copied>",
+        "inputSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "description": "<omitted: Aside prompt or documentation prose, not copied>"
+            },
+            "code": {
+              "type": "string",
+              "description": "<omitted: Aside prompt or documentation prose, not copied>"
+            },
+            "profile_id": {
+              "description": "<omitted: Aside prompt or documentation prose, not copied>",
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "title",
+            "code"
+          ]
+        },
+        "execution": {
+          "taskSupport": "forbidden"
+        }
+      },
+      {
+        "name": "memory_search",
+        "description": "<omitted: Aside prompt or documentation prose, not copied>",
+        "inputSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "queries": {
+              "minItems": 1,
+              "maxItems": 3,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "<omitted: Aside prompt or documentation prose, not copied>"
+            },
+            "max_results": {
+              "description": "<omitted: Aside prompt or documentation prose, not copied>",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            }
+          },
+          "required": [
+            "queries"
+          ]
+        },
+        "execution": {
+          "taskSupport": "forbidden"
+        }
+      },
+      {
+        "name": "exec",
+        "description": "<omitted: Aside prompt or documentation prose, not copied>",
+        "inputSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "type": "string",
+              "minLength": 1,
+              "description": "<omitted: Aside prompt or documentation prose, not copied>"
+            },
+            "session_id": {
+              "description": "<omitted: Aside prompt or documentation prose, not copied>",
+              "type": "string"
+            },
+            "profile_id": {
+              "description": "<omitted: Aside prompt or documentation prose, not copied>",
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "prompt"
+          ]
+        },
+        "execution": {
+          "taskSupport": "forbidden"
+        }
+      }
+    ]
+  },
+  "jsonrpc": "2.0",
+  "id": 2
+}

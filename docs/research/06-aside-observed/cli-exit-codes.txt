@@ -1,0 +1,17 @@
+# CLI exit codes and output shape, run 2026-10-23 (CLI 1.26.1023.1115)
+# Only safe invocations: --help, version, status and list reads, and one-shot repl scripts that open no tab.
+# Not included: any positional word except the one accidental row, which is recorded because it happened (section 0). Not run: exec, login, logout, update, memory, host profiles, settings get.
+
+command | exit | output shape (verified in this run)
+aside --version | 0 | one line: 1.26.1023.1115
+aside --bogus-flag | 1 | unknown option error
+aside session stop (no id) | 1 | missing argument error
+aside account status | 0 | signed-in account line and profile label (account email and profile label not recorded here)
+aside host status | 0 | one line: local
+aside host list | 1 | one line ending in ": 403" (remote endpoint refused for this account)
+aside skills list | 0 | 13 lines, tab-separated name and description (catalog text not copied; 1160 bytes)
+aside session list | 0 | one line per session; 1 session (the MCP test session) after cleanup
+aside repl "console.log(1+1)" | 0 | stdout "2", then an ANSI-colored status line "[ok | 10ms]"
+aside repl "const x = ;" | 0 | ANSI-colored SyntaxError message and "[error | ...]" status; exit code is 0 despite the error (defect)
+aside mcp (stdin closed) | 0 | stderr JSON lines: startup event (replIdleTimeoutMs 1800000, orphanCheckIntervalMs 30000), shutdown event with reason "stdin-end"
+aside bogus-cmd (accident, section 0) | 0 | treated as a prompt: started one agent session (defect)

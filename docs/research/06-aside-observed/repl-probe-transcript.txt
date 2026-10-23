@@ -1,0 +1,218 @@
+# Step 010 note: the download was saved to ~/Downloads (checked after the run with ls and cmp against the test string, one name only; the file was removed).
+# REPL probe transcript (MCP repl tool, local and public test pages only). Aside prompt text and system warnings omitted.
+
+## step 001: open local form page and default snapshot
+isError=False blocks=['text']
+code: const formTab = await openTab('http://127.0.0.1:8765/form.html'); console.log('url=' + page.url()); const sFull = await snapshot(page); console.log(sFull.tree);
+--- output ---
+✔︎ Opened a new tab and set it active: tabs[0], page → Aside probe form (http://127.0.0.1:8765/form.html)
+url=http://127.0.0.1:8765/form.html
+- title: "Aside probe form" [url=http://127.0.0.1:8765/form.html]
+- heading "Probe form" [level=1]
+- text: "Local test page for yaac research. No personal data."
+- form:
+  - label: "Name"
+  - textbox "Name" [ref=e1] [placeholder="Your name"]
+  - label: "Email"
+  - textbox "Email" [ref=e2]
+  - label:
+    - checkbox "Agree" [ref=e3]
+    - text: "Agree"
+  - button "Send" [ref=e4]
+- text: "idle"
+
+## step 002: interactive snapshot
+isError=False blocks=['text']
+code: const sI = await snapshot(page, { interactive: true }); console.log(sI.tree); console.log('DIFF_LEN=' + sI.diff.length);
+--- output ---
+# note: interactive (clickable / focusable) elements only.
+- title: "Aside probe form" [url=http://127.0.0.1:8765/form.html]
+- heading "Probe form" [level=1]
+- text: "Local test page for yaac research. No personal data.\n\n  Name"
+- textbox "Name" [ref=e1] [placeholder="Your name"]
+- text: "Email"
+- textbox "Email" [ref=e2]
+- checkbox "Agree" [ref=e3]
+- text: "Agree"
+- button "Send" [ref=e4]
+- text: "idle"
+DIFF_LEN=409
+
+## step 003: fill two fields and click checkbox by ref, then diff
+isError=False blocks=['text']
+code: await page.locator('e1').fill('Probe Name'); await page.locator('e2').fill('probe@example.invalid'); await page.locator('e3').click(); const sA = await snapshot(page); console.log(sA.diff);
+--- output ---
+- title: "Aside probe form" [url=http://127.0.0.1:8765/form.html]
+- heading "Probe form" [level=1]
+- text: "Local test page for yaac research. No personal data."
+- form:
+  - label: "Name"
+  - textbox "Name" [ref=e1] [placeholder="Your name"]: "Probe Name"
+  - label: "Email"
+  - textbox "Email" [ref=e2]: "probe@example.invalid"
+  - label:
+    - checkbox "Agree" [ref=e3] [checked] [focused]
+    - text: "Agree"
+  - button "Send" [ref=e4]
+- text: "idle"
+
+## step 004: unknown ref error
+isError=False blocks=['text']
+code: try { await page.locator('e999').click({ timeout: 3000 }); console.log('no error'); } catch (e) { console.log('ERR ' + e.name + ': ' + String(e.message).slice(0, 400)); }
+--- output ---
+ERR RefStaleError: Ref "e999" is stale — the element was removed or the page changed. Take a new snapshot and retry.
+
+## step 005: click Send (this submitted the form; test-design mistake, page changed)
+isError=False blocks=['text']
+code: await page.locator('e4').click(); const s5 = await snapshot(page); console.log('DIFF<<' + s5.diff + '>>');
+--- output ---
+DIFF<<- title: "Error response" [url=http://127.0.0.1:8765/submit?name=Probe+Name&email=probe%40example.invalid&agree=on]
+- heading "Error response" [level=1]
+- text: "Error code: 404\n         Message: File not found.\n        Error code explanation: 404 - Nothing matches the given URI.">>
+
+## step 006: keyboard on changed page (failed, stale page)
+isError=True blocks=['text', 'text']
+code: await page.locator('e2').click(); await page.keyboard.type('typed@example.invalid'); await page.keyboard.press('Tab'); const s6 = await snapshot(page, { interactive: true }); console.log(s6.diff);
+--- output ---
+Error: RefStaleError: Ref "e2" is stale — the element was removed or the page changed. Take a new snapshot and retry.
+    at #o (file:///Applications/Aside.app/Contents/Frameworks/Aside%20Framework.framework/Versions/1.0.1022.1/Libraries/AsideDaemon/mac-arm64/Aside%20Daemon.app/Contents/MacOS/aside-daemon:5567:1179)
+    at async #r (file:///Applications/Aside.app/Contents/Frameworks/Aside%20Framework.framework/Versions/1.0.1022.1/Libraries/AsideDaemon/mac-arm64/Aside%20Daemon.app/Contents/MacOS/aside-daemon:5532:1365)
+    at async jn.click (file:///Applications/Aside.app/Contents/Frameworks/Aside%20Framework.framework/Versions/1.0.1022.1/Libraries/AsideDaemon/mac-arm64/Aside%20Daemon.app/Contents/MacOS/aside-daemon:5532:1903)
+
+## step 007: evaluate and wait (failed, stale page)
+isError=True blocks=['text', 'text']
+code: const t = await page.evaluate(() => document.title); console.log('evaluate title=' + t); await page.waitForSelector('#status', { timeout: 5000 }); console.log('wait ok'); try { await page.waitForSelector('#nope', { timeout: 2000 }); } catch (e) { console.log('WAIT_ERR ' + e.name + ': ' + String(e.message).slice(0, 300)); }
+--- output ---
+Error: Error: waitForSelector: timed out after 5000ms waiting for "#status" to be visible
+    at AsidePage.waitForSelector (file:///Applications/Aside.app/Contents/Frameworks/Aside%20Framework.framework/Versions/1.0.1022.1/Libraries/AsideDaemon/mac-arm64/Aside%20Daemon.app/Contents/MacOS/aside-daemon:5588:20181)evaluate title=Error response
+
+## step 008: open second local page, interactive snapshot
+isError=False blocks=['text']
+code: const selTab = await openTab('http://127.0.0.1:8765/select.html'); const sS = await snapshot(page, { interactive: true }); console.log(sS.tree); console.log('TABS=' + tabs.length);
+--- output ---
+✔︎ Opened a new tab and set it active: tabs[1], page → Aside probe select and download (http://127.0.0.1:8765/select.html)
+# note: interactive (clickable / focusable) elements only.
+- title: "Aside probe select and download" [url=http://127.0.0.1:8765/select.html]
+- heading "Select and download" [level=1]
+- text: "Colour"
+- combobox "Colour" [ref=e1]:
+  - option "red" (selected)
+  - option "green"
+  - option "blue"
+- link "Download probe file" [ref=e2]
+- text: "idle"
+TABS=2
+
+## step 009: selectOption then diff
+isError=False blocks=['text']
+code: const b0 = await snapshot(page); await page.locator('e1').selectOption('blue'); const b1 = await snapshot(page); console.log('DIFF<<' + b1.diff + '>>');
+--- output ---
+DIFF<<@@ -4 +4 @@
+-  - option "red" (selected)
++  - option "red"
+@@ -6 +6 @@
+-  - option "blue"
++  - option "blue" (selected)
+@@ -8 +8 @@
+-- text: "idle"
++- text: "picked blue"
+>>
+
+## step 010: download link on local page
+isError=False blocks=['text']
+code: await fs.mkdir('./artifacts', { recursive: true }); const dlP = page.waitForEvent('download', { timeout: 15000 }); await page.locator('e2').click(); const dl = await dlP; const dp = await dl.path(); console.log(JSON.stringify({ name: dl.suggestedFilename(), size: (await fs.stat(dp)).size }));
+--- output ---
+{"name":"probe.txt","size":29}
+
+## step 011: close tab, reopen form
+isError=False blocks=['text']
+code: await closeTab(formTab); console.log('TABS_AFTER_CLOSE=' + tabs.length); const formTab2 = await openTab('http://127.0.0.1:8765/form.html'); const f0 = await snapshot(page, { interactive: true }); console.log(f0.tree);
+--- output ---
+TABS_AFTER_CLOSE=1
+✔︎ Opened a new tab and set it active: tabs[1], page → Aside probe form (http://127.0.0.1:8765/form.html)
+# note: interactive (clickable / focusable) elements only.
+- title: "Aside probe form" [url=http://127.0.0.1:8765/form.html]
+- heading "Probe form" [level=1]
+- text: "Local test page for yaac research. No personal data.\n\n  Name"
+- textbox "Name" [ref=e1] [placeholder="Your name"]
+- text: "Email"
+- textbox "Email" [ref=e2]
+- checkbox "Agree" [ref=e3]
+- text: "Agree"
+- button "Send" [ref=e4]
+- text: "idle"
+
+## step 012: keyboard type and press on fresh form, snapshot
+isError=False blocks=['text']
+code: await page.locator('e2').click(); await page.keyboard.type('typed@example.invalid'); await page.keyboard.press('Tab'); const f1 = await snapshot(page, { interactive: true }); console.log('TREE<<' + f1.tree + '>>');
+--- output ---
+TREE<<# note: interactive (clickable / focusable) elements only.
+- title: "Aside probe form" [url=http://127.0.0.1:8765/form.html]
+- heading "Probe form" [level=1]
+- text: "Local test page for yaac research. No personal data.\n\n  Name"
+- textbox "Name" [ref=e1] [placeholder="Your name"]
+- text: "Email"
+- textbox "Email" [ref=e2]: "typed@example.invalid"
+- checkbox "Agree" [ref=e3] [focused]
+- text: "Agree"
+- button "Send" [ref=e4]
+- text: "idle">>
+
+## step 013: screenshot, annotated screenshot, goto and goBack
+isError=False blocks=['text', 'image', 'text']
+code: const img = await page.screenshot(); console.log('png_bytes=' + img.length); const ann = await annotatedScreenshot(page); console.log('annotated_b64_len=' + ann.base64Image.length); display(img); await page.goto('http://127.0.0.1:8765/select.html'); console.log('after_goto=' + page.url()); await page.goBack(); console.log('after_back=' + page.url());
+--- output ---
+png_bytes=53673
+annotated_b64_len=73768
+Displayed image saved to: <Aside session path, not read> [image/jpeg]
+[Image: original 2880x1800, displayed at 2000x1250. Multiply coordinates by 1.44 to map to original image.]after_goto=http://127.0.0.1:8765/select.html
+after_back=http://127.0.0.1:8765/form.html
+
+## step 014: example.com snapshot sizes (stats only)
+isError=False blocks=['text']
+code: const exTab = await openTab('https://example.com/'); const exFull = await snapshot(page); const exI = await snapshot(page, { interactive: true }); let wrote = ' ...
+--- output ---
+<Aside runtime warning, omitted>
+
+✔︎ Opened a new tab and set it active: tabs[2], page → Example Domain (https://example.com/)
+{"url":"https://example.com/","fullTreeBytes":270,"fullTreeLines":3,"interactiveBytes":329,"screenshotPngBytes":199568,"wrote":"ERR Path escapes Project and session roots: /tmp/aside-probe/out/example-full.txt"}
+
+## step 017: Wikipedia snapshot sizes (stats only; body not saved)
+isError=False blocks=['text']
+code: const wpTab = await openTab('https://en.wikipedia.org/wiki/Web_browser'); const wpFull2 = await snapshot(page); const wpI2 = await snapshot(page, { interactive: ...
+--- output ---
+✔︎ Opened a new tab and set it active: tabs[3], page → Web browser - Wikipedia (https://en.wikipedia.org/wiki/Web_browser)
+STATS {"url":"https://en.wikipedia.org/wiki/Web_browser","fullTreeBytes":16469,"fullTreeNewlines":409,"interactiveBytes":16466,"screenshotPngBytes":845839}
+<full tree body not saved>
+
+## step 018: GitHub yaac page snapshot sizes (stats only; body not saved)
+isError=False blocks=['text']
+code: const ghTab = await openTab('https://github.com/tonibergholm/yaac'); const ghFull2 = await snapshot(page); const ghI2 = await snapshot(page, { interactive: true ...
+--- output ---
+✔︎ Opened a new tab and set it active: tabs[4], page → tonibergholm/yaac: Open-source Arc-like browser: Chromium via CEF, Rust core, Helium-style privacy (https://github.com/tonibergholm/yaac)
+STATS {"url":"https://github.com/tonibergholm/yaac","fullTreeBytes":6595,"fullTreeNewlines":151,"interactiveBytes":5351,"screenshotPngBytes":396659}
+<full tree body not saved>
+
+## step 019: large local page size cap and selector scope
+isError=False blocks=['text']
+code: const bigTab = await openTab('http://127.0.0.1:8765/big.html'); const bgFull = await snapshot(page); const bgI = await snapshot(page, { interactive: true }); co ...
+--- output ---
+<Aside runtime warning, omitted>
+
+✔︎ Opened a new tab and set it active: tabs[5], page → Aside probe big list (http://127.0.0.1:8765/big.html)
+STATS {"fullBytes":16465 (fullTail removed from capture), [added from snapshot-sizes.txt: "interactiveBytes":16453, "selBytes":268],
+
+## step 020: selector scope on Wikipedia
+isError=False blocks=['text']
+code: const wpTab3 = await openTab('https://en.wikipedia.org/wiki/Web_browser'); const wpHead = await snapshot(page, { selector: '#firstHeading' }); const wpRefSnap = ...
+--- output ---
+✔︎ Opened a new tab and set it active: tabs[6], page → Web browser - Wikipedia (https://en.wikipedia.org/wiki/Web_browser)
+HEAD<<- title: "Web browser - Wikipedia" [url=https://en.wikipedia.org/wiki/Web_browser]
+- heading [level=1]: "Web browser">>
+REFSTAT 16469
+
+## step 021: close all tabs of this session
+isError=False blocks=['text']
+code: const closedCount = tabs.length; for (const t of [...tabs]) { try { await closeTab(t); } catch (e) { console.log('CLOSE_ERR ' + String(e.message).slice(0, 160)); } } console.log('CLOSED=' + closedCount + ' REMAINING_IN_SESSION=' + tabs.length);
+--- output ---
+CLOSED=7 REMAINING_IN_SESSION=0

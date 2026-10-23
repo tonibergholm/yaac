@@ -1,0 +1,25 @@
+# Daemon transport and auth observations, 2026-10-23 (no credentials read, no tokens sent)
+
+## Processes and sockets
+- aside mcp (CLI process, pid 20161, while a repl session was open): TCP 127.0.0.1:<ephemeral> -> 127.0.0.1:21420 ESTABLISHED; six pipe fds (stdio); no Unix listening socket.
+- Aside Daemon (pid 13450): TCP 127.0.0.1:21420 LISTEN; accepted connections from the browser network helper (pid 13445, 17 ESTABLISHED at the time of the check) and from the aside mcp process.
+- The CLI and the browser's helper use the same loopback port, 21420. The CLI-to-daemon link is TCP, not a Unix socket.
+
+## Daemon status document (GET / and GET /health, no headers except where noted; 200 JSON, 231 bytes)
+{"service":"aside-daemon","version":"1.26.1023.5","pid":13450,"host":"127.0.0.1","port":21420,"ready":true,"status":"idle","startedAt":"2026-10-23T07:07:17.207Z","runningSessionCount":0,"semaphore":{"available":200,"capacity":200}}
+Contains process and capacity fields only. No user data, no token.
+
+## Host and Origin checks (headers only, curl)
+- GET / with Origin: https://example.com -> 403 (68 bytes body)
+- GET / with Host: evil.test -> 403
+- GET / with no extra headers -> 200 (status document above)
+- Browser CORS behavior not tested (no browser-initiated request).
+
+## Auth header names seen in the CLI binary (strings; names only; not proof of what is sent)
+- "authorization" (lowercase, 29 hits) and "Authorization" (16 hits): present.
+- "Cookie" and "Set-Cookie": present (generic HTTP library strings).
+- No token, key, or credential file was read.
+
+## Remote hosts
+- aside host status -> local (exit 0).
+- aside host list -> an error line ending in ": 403" (exit 1). The call reached a remote endpoint (help text says "Remote Control / cloud"). The remote path is not verified.
