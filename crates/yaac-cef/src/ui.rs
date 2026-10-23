@@ -573,7 +573,7 @@ pub(crate) fn browser_created(view: ViewId, browser: Browser) {
             entry.counted = true;
         }
     });
-    let native = crate::macos::window_number(&browser)
+    let native = crate::os::window_number(&browser)
         .map(|n| n.to_string())
         .unwrap_or_else(|| "none".into());
     elog!("browser created view={view} kind={kind:?} browser={browser_id} native_window={native}");

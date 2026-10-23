@@ -16,7 +16,35 @@ use std::process::ExitCode;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc::unbounded_channel;
 use yaac_cef::{EngineSettings, RpcHandler};
-use yaac_platform::{AppPaths, MacPlatform, Platform, ensure_private_dir};
+#[cfg(target_os = "linux")]
+use yaac_platform::LinuxPlatform;
+#[cfg(target_os = "macos")]
+use yaac_platform::MacPlatform;
+use yaac_platform::{AppPaths, Platform, ensure_private_dir};
+
+/// Linux runs its CEF helper processes (zygote, renderer, GPU, utility) as this executable with
+/// `--type=...`. They must be handled before anything else here, see `yaac_cef::run_helper`. The
+/// macOS helper is a separate bundled binary, so there is nothing to do here.
+#[cfg(target_os = "linux")]
+fn helper_exit() -> Option<ExitCode> {
+    if std::env::args().any(|arg| arg.starts_with("--type=")) {
+        return Some(ExitCode::from(yaac_cef::run_helper() as u8));
+    }
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn helper_exit() -> Option<ExitCode> {
+    None
+}
+
+fn host_paths() -> AppPaths {
+    #[cfg(target_os = "macos")]
+    let paths = MacPlatform.paths();
+    #[cfg(target_os = "linux")]
+    let paths = LinuxPlatform.paths();
+    paths
+}
 
 /// What this run does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +144,9 @@ fn is_empty_or_missing(dir: &Path) -> Result<bool, String> {
 }
 
 fn main() -> ExitCode {
+    if let Some(code) = helper_exit() {
+        return code;
+    }
     let mode = match Mode::from_args(std::env::args().skip(1)) {
         Ok(mode) => mode,
         Err(message) => {
@@ -124,7 +155,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let paths = MacPlatform.paths();
+    let paths = host_paths();
     let data_dir = match data_dir_for(mode, &paths) {
         Ok(dir) => dir,
         Err(message) => {

@@ -12,8 +12,8 @@
 //! - `coalesce`, `nav`, `text`, `paths`: bounds on page-driven events, navigation generations,
 //!   caps and log redaction, private directories. Pure, and unit-tested.
 
-#[cfg(not(target_os = "macos"))]
-compile_error!("yaac-cef implements only macOS in M1 (see docs/m1-plan.md)");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("yaac-cef implements macOS (M1) and Linux (M2, Omarchy) only");
 
 mod assets;
 mod client;
@@ -29,8 +29,15 @@ mod text;
 mod ui;
 mod window;
 
+// Platform specifics behind one name, `os`: each module exports the same functions.
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "linux")]
+use linux as os;
+#[cfg(target_os = "macos")]
+use macos as os;
 
 #[cfg(any(debug_assertions, feature = "dev-tools"))]
 pub use assets::DirAssets;
