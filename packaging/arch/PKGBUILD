@@ -53,7 +53,9 @@ depends=(
   'pango'
   'systemd-libs'
   'vulkan-icd-loader'
-  'xdg-desktop-portal'
+)
+optdepends=(
+  'xdg-desktop-portal: file dialogs (not used yet)'
 )
 makedepends=(
   'cargo'
@@ -123,5 +125,9 @@ package() {
   ln -s /usr/lib/yaac/yaac-app "$pkgdir/usr/bin/yaac-app"
   install -Dm644 packaging/arch/yaac.desktop "$pkgdir/usr/share/applications/yaac.desktop"
   install -Dm644 packaging/arch/yaac.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/yaac.svg"
-  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/yaac/LICENSE"
+  # CEF's licence and the third-party credits (Chromium and its dependencies) that the bundle ships.
+  local cef="$srcdir/cef/154.0.34/cef_linux_x86_64"
+  install -Dm644 "$cef/LICENSE.txt" "$pkgdir/usr/share/licenses/yaac/CEF-LICENSE.txt"
+  install -Dm644 "$cef/CREDITS.html" "$pkgdir/usr/share/licenses/yaac/CEF-CREDITS.html"
 }
