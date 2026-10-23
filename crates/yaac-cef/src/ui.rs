@@ -275,9 +275,11 @@ pub(crate) fn tab_do_close(browser: i32) -> bool {
     if !with(|s| s.tab_closing.remove(&browser)) {
         return false;
     }
-    let Some(shared) = shared() else { return true };
+    // A browser the engine never bound to a view cannot be released here, and returning true would
+    // leave it open for good: take the default instead.
+    let Some(shared) = shared() else { return false };
     let Some((view, _)) = shared.registry.browser(browser) else {
-        return true;
+        return false;
     };
     post_to_ui(Box::new(move || {
         let released = with(|s| {
@@ -644,7 +646,12 @@ pub(crate) fn browser_crashed(view: ViewId) {
     }
     match browser {
         Some(browser) => {
-            post_to_ui(Box::new(move || close_browser(&browser, true)));
+            // Marked like a tab close: without it the default `do_close` lets CEF Views close the
+            // parent window, so a page that crashes its renderer would close the window.
+            post_to_ui(Box::new(move || {
+                with(|s| s.tab_closing.insert(browser.identifier()));
+                close_browser(&browser, true);
+            }));
         }
         None => elog!("crash without browser view={view}"),
     }

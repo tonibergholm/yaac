@@ -160,8 +160,9 @@ pub fn run_browser(
 
     // The loop has ended. Deliver what was queued, then let the host stop its side.
     engine.flush_events();
-    let code = crate::engine::exit_code();
     before_shutdown(engine.clone());
+    // Read after the host has stopped: a harness sets its verdict last, and the host waits for it.
+    let code = crate::engine::exit_code();
     // Drop every CEF object held on this thread, while CEF is still running.
     ui::release_ui_state();
     close_gate();

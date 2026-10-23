@@ -57,7 +57,10 @@ pub fn ui_assets(mode: crate::Mode) -> Arc<dyn UiAssets> {
     {
         if matches!(
             mode,
-            crate::Mode::EngineHarness | crate::Mode::RpcHarness | crate::Mode::QuitHarness
+            crate::Mode::EngineHarness
+                | crate::Mode::RpcHarness
+                | crate::Mode::QuitHarness
+                | crate::Mode::TabHarness
         ) {
             return Arc::new(yaac_cef::EmbeddedAssets::new(harness::HARNESS_FILES));
         }
@@ -150,7 +153,10 @@ pub fn start(
     }));
     #[cfg(yaac_dev)]
     if let Some(stages) = mode.stages() {
-        runtime.spawn(harness::run(stages, engine, events, calls));
+        let task = runtime.spawn(harness::run(stages, engine, events, calls));
+        if let Ok(mut slot) = HARNESS_TASK.lock() {
+            *slot = Some(task);
+        }
         return;
     }
     start_core(mode, engine, runtime, events, data_dir, core_cell);
@@ -222,6 +228,10 @@ fn start_core(
     });
 }
 
+/// The harness task, so shutdown can wait for its verdict.
+#[cfg(yaac_dev)]
+static HARNESS_TASK: Mutex<Option<tokio::task::JoinHandle<()>>> = Mutex::new(None);
+
 /// The shutdown sequence after the message loop has ended, on the UI thread: stop the core (which
 /// flushes its writes and joins its threads), wait a bounded time for in-flight RPCs, then stop the
 /// runtime. CEF's own shutdown follows in `run_browser`.
@@ -229,6 +239,18 @@ pub fn shutdown(engine: Arc<CefEngine>, core_cell: Arc<OnceLock<CoreHandle>>, ru
     // The events still queued in the engine go to the core first. Its inbox is ordered, so the core
     // handles them before the shutdown request that follows.
     engine.flush_events();
+    // A harness sets its verdict (the exit code) last. The exit code is read after this returns.
+    #[cfg(yaac_dev)]
+    if let Some(task) = HARNESS_TASK.lock().ok().and_then(|mut slot| slot.take()) {
+        let finished = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(10), task)
+                .await
+                .is_ok()
+        });
+        if !finished {
+            println!("HARNESS result=fail reason=the harness did not finish during shutdown");
+        }
+    }
     if core_cell.get().is_some() {
         let target = engine.events_flushed();
         let deadline = std::time::Instant::now() + SHUTDOWN_WAIT;

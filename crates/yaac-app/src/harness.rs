@@ -190,6 +190,7 @@ pub async fn run(
     };
     match harness.stages(stages).await {
         Ok(()) => {
+            engine.set_exit_code(0);
             println!("HARNESS result=pass stages={stages:?}");
             engine.quit(0);
         }
@@ -387,8 +388,6 @@ async fn quit_during_create(harness: &mut Harness) -> Result<(), String> {
             url: data_url("<title>pending</title>"),
         },
     });
-    // The pass code is set before the close: the loop can end as soon as WindowClosed is sent.
-    harness.engine.set_exit_code(0);
     harness.engine.close_windows();
     println!("HARNESS step=quit-during-create requested");
     let matched = harness
@@ -683,13 +682,10 @@ impl Harness {
 
         // Close: closing the window's views commits the window close. The engine reports
         // `WindowClosing` first and `WindowClosed` last; the views' own `Closed` events are held
-        // back once the close is committed. The process can exit as soon as `WindowClosed` is sent,
-        // so the pass code is set before the close: lifecycle events reach this task through the
-        // engine's 50 ms flush, and the message loop can end before they arrive. A failure after
-        // this point is reported by the `HARNESS result=fail` line (and fails any run that
-        // requires `result=pass`), not by the exit code.
+        // back once the close is committed. The message loop can end before this task has seen those
+        // events, so the app waits for this task during shutdown and reads the exit code after it:
+        // the verdict is set last, and a run that fails here exits non-zero.
         self.mark();
-        self.engine.set_exit_code(0);
         // A window close, as the red button or Cmd-Q makes it. Closing views one by one is a tab
         // close and leaves the window open.
         self.engine.close_windows();
@@ -710,6 +706,10 @@ impl Harness {
             .await?;
         if !matches!(last.last(), Some(EngineEvent::WindowClosed { .. })) {
             return Err(format!("WindowClosed was not last: {last:?}"));
+        }
+        // A test of the harness itself: a failure after the window has closed must exit non-zero.
+        if std::env::var_os("YAAC_HARNESS_FAIL_AFTER_CLOSE").is_some() {
+            return Err("forced failure after the close (harness self-test)".into());
         }
         println!("HARNESS step=close result=ok");
         Ok(())

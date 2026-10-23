@@ -33,6 +33,7 @@ pub enum Mode {
     #[cfg(yaac_dev)]
     QuitHarness,
     /// `--tab-harness`: closing tabs must not close the window.
+    #[cfg(yaac_dev)]
     TabHarness,
     /// `--persist-write`: real core and store; opens tabs through the RPC path, then quits.
     #[cfg(yaac_dev)]
@@ -53,6 +54,7 @@ impl Mode {
                 "--rpc-harness" => Mode::RpcHarness,
                 #[cfg(yaac_dev)]
                 "--quit-harness" => Mode::QuitHarness,
+                #[cfg(yaac_dev)]
                 "--tab-harness" => Mode::TabHarness,
                 #[cfg(yaac_dev)]
                 "--persist-write" => Mode::PersistWrite,
