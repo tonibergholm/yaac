@@ -32,6 +32,8 @@ pub enum Mode {
     /// `--quit-harness`: requests quit while a view is still being created.
     #[cfg(yaac_dev)]
     QuitHarness,
+    /// `--tab-harness`: closing tabs must not close the window.
+    TabHarness,
     /// `--persist-write`: real core and store; opens tabs through the RPC path, then quits.
     #[cfg(yaac_dev)]
     PersistWrite,
@@ -51,6 +53,7 @@ impl Mode {
                 "--rpc-harness" => Mode::RpcHarness,
                 #[cfg(yaac_dev)]
                 "--quit-harness" => Mode::QuitHarness,
+                "--tab-harness" => Mode::TabHarness,
                 #[cfg(yaac_dev)]
                 "--persist-write" => Mode::PersistWrite,
                 #[cfg(yaac_dev)]
@@ -67,6 +70,7 @@ impl Mode {
             Mode::EngineHarness => Some(harness::Stages::All),
             Mode::RpcHarness => Some(harness::Stages::RpcOnly),
             Mode::QuitHarness => Some(harness::Stages::QuitDuringCreate),
+            Mode::TabHarness => Some(harness::Stages::TabClose),
             _ => None,
         }
     }

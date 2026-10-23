@@ -22,8 +22,11 @@ use yaac_model::ViewId;
 use yaac_platform::{MainThread, activate_app, install_app_menu};
 use yaac_store::SqliteStore;
 
-/// How long the shutdown waits for in-flight RPCs, and for the runtime's tasks.
+/// How long the shutdown waits for in-flight RPCs, for forwarded events, and for the runtime's tasks.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
+
+/// Engine events forwarded to the core so far. Compared with `CefEngine::events_flushed` at shutdown.
+static FORWARDED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Engine-side main-thread hook, backed by CEF's UI-thread task queue.
 pub struct CefMainThread;
@@ -166,6 +169,10 @@ fn start_core(
     let blocking = runtime.clone();
     // The store and the core start off the UI thread: opening SQLite must not stall the UI.
     runtime.spawn_blocking(move || {
+        // A quit that committed while the core was starting: do not start a core for a closed app.
+        if engine.is_quitting() {
+            return;
+        }
         let store = match SqliteStore::open(&data_dir.join("yaac.db")) {
             Ok(store) => store,
             Err(error) => {
@@ -219,6 +226,22 @@ fn start_core(
 /// flushes its writes and joins its threads), wait a bounded time for in-flight RPCs, then stop the
 /// runtime. CEF's own shutdown follows in `run_browser`.
 pub fn shutdown(engine: Arc<CefEngine>, core_cell: Arc<OnceLock<CoreHandle>>, runtime: Runtime) {
+    // The events still queued in the engine go to the core first. Its inbox is ordered, so the core
+    // handles them before the shutdown request that follows.
+    engine.flush_events();
+    if core_cell.get().is_some() {
+        let target = engine.events_flushed();
+        let deadline = std::time::Instant::now() + SHUTDOWN_WAIT;
+        while FORWARDED.load(std::sync::atomic::Ordering::SeqCst) < target
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        println!(
+            "HOST shutdown events forwarded={} of {target}",
+            FORWARDED.load(std::sync::atomic::Ordering::SeqCst)
+        );
+    }
     if let Some(core) = core_cell.get() {
         core.shutdown();
     }
@@ -235,6 +258,7 @@ async fn forward_engine_events(
 ) {
     while let Some(event) = events.recv().await {
         sender.send(event);
+        FORWARDED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 

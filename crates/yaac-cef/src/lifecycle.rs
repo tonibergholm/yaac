@@ -2,11 +2,11 @@
 //! until the last window closes. Each helper process calls `run_helper` and exits with its code.
 
 use crate::engine::{CefEngine, EngineSettings, close_gate, open_gate};
-use crate::paths::private_dir;
 use crate::scheme;
 use crate::ui;
 use cef::*;
 use std::sync::{Arc, Mutex};
+use yaac_platform::ensure_private_dir as private_dir;
 
 type OnStart = Box<dyn FnOnce(Arc<CefEngine>) + Send>;
 

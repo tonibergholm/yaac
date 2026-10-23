@@ -6,7 +6,12 @@ fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     let debug = std::env::var("PROFILE").is_ok_and(|p| p == "debug");
     let dev_tools = std::env::var_os("CARGO_FEATURE_DEV_TOOLS").is_some();
+    let embed_ui = std::env::var_os("CARGO_FEATURE_EMBED_UI").is_some();
     if debug || dev_tools {
         println!("cargo::rustc-cfg=yaac_dev");
+    } else if !embed_ui {
+        println!(
+            "cargo::error=a release build of yaac-app needs the embed-ui feature: the UI is served from the binary. Build with --features embed-ui, or use a debug or dev-tools build."
+        );
     }
 }

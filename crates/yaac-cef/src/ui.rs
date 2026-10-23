@@ -10,7 +10,6 @@ use crate::client::EngineClient;
 use crate::engine::{Shared, post_after, post_to_ui};
 use crate::log::elog;
 use crate::nav::NavTracker;
-use crate::paths::private_dir;
 use crate::window::{ViewDelegateImpl, WindowDelegateImpl};
 use cef::*;
 use std::cell::RefCell;
@@ -19,6 +18,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use yaac_engine::{EngineCommand, EngineEvent, ViewKind, ViewSpec, WindowSpec};
 use yaac_model::{ProfileId, ViewId, WindowId};
+use yaac_platform::ensure_private_dir as private_dir;
 
 /// Logical width of the sidebar view. The content view takes the rest.
 pub(crate) const SIDEBAR_WIDTH: i32 = 240;
@@ -41,7 +41,8 @@ struct WindowEntry {
 struct ViewEntry {
     window: WindowId,
     kind: ViewKind,
-    view: BrowserView,
+    /// The Views object. `None` once a tab close released it (see `tab_do_close`).
+    view: Option<BrowserView>,
     /// Set in `on_after_created`, cleared in `on_before_close`.
     browser: Option<Browser>,
     /// Counted in the live totals (set at `Created`, cleared at close).
@@ -65,7 +66,38 @@ struct State {
     queue: VecDeque<Queued>,
     pump_scheduled: bool,
     closing: HashSet<WindowId>,
+    /// Browsers whose tab close was requested through `Close{view}`.
+    tab_closing: HashSet<i32>,
+    /// Windows whose close attempt committed.
+    committed: HashSet<WindowId>,
+    /// Close attempts in progress, with the `Closed` events they hold back.
+    attempts: HashMap<WindowId, Vec<ViewId>>,
 }
+
+/// Test hook: until this instant, new profiles are not ready (see `engine::test_hooks`).
+#[cfg(any(debug_assertions, feature = "dev-tools"))]
+pub(crate) static PROFILE_DELAY: std::sync::Mutex<
+    Option<(std::time::Instant, std::time::Duration)>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(any(debug_assertions, feature = "dev-tools"))]
+fn profile_delayed() -> bool {
+    PROFILE_DELAY
+        .lock()
+        .ok()
+        .and_then(|slot| *slot)
+        .is_some_and(|(since, delay)| since.elapsed() < delay)
+}
+
+#[cfg(not(any(debug_assertions, feature = "dev-tools")))]
+fn profile_delayed() -> bool {
+    false
+}
+
+/// Window close attempts entered (`can_close_window`). Read by the harness to show that closing a tab
+/// did not start one.
+pub(crate) static CLOSE_ATTEMPTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());
@@ -180,9 +212,7 @@ fn run(command: EngineCommand, attempts: u32) -> Option<Queued> {
             }
         }
         EngineCommand::Show { view } => show(view),
-        EngineCommand::Close { view } => {
-            with_browser(view, |browser| close_browser(browser, false))
-        }
+        EngineCommand::Close { view } => close_tab(view),
         EngineCommand::Load { view, url } => with_browser(view, |browser| {
             if let Some(frame) = browser.main_frame() {
                 frame.load_url(Some(&CefString::from(url.as_str())));
@@ -217,6 +247,51 @@ fn with_browser(view: ViewId, op: impl FnOnce(&Browser)) {
         Some(browser) => op(&browser),
         None => elog!("dropped command view={view} reason=no-browser"),
     }
+}
+
+/// Closes one tab. CEF Views closes the parent window when a browser in it closes, unless the
+/// browser's `on_do_close` returns true and the application then destroys the browser's
+/// `BrowserView` itself (CEF documentation for `DoClose` with Views). So the browser is marked here,
+/// and `tab_do_close` completes the close. The close is forced: the page's own close handling (a
+/// `beforeunload` prompt) is not waited for, because a tab whose close button was pressed must
+/// close. `on_before_close` then reports the view closed as usual.
+fn close_tab(view: ViewId) {
+    let browser = with(|s| s.views.get(&view).and_then(|entry| entry.browser.clone()));
+    match browser {
+        Some(browser) => {
+            with(|s| s.tab_closing.insert(browser.identifier()));
+            elog!("tab close view={view}");
+            close_browser(&browser, true);
+        }
+        None => elog!("dropped close view={view} reason=no-browser"),
+    }
+}
+
+/// `on_do_close` for a browser. For a tab closed by `Close{view}` it returns true (handled) and
+/// completes the close: the tab's `BrowserView` leaves the window and the engine releases its own
+/// reference, so the view is destroyed and the browser reports `on_before_close`. For every other
+/// browser it returns false, the default, so a real window close still reaches the window.
+pub(crate) fn tab_do_close(browser: i32) -> bool {
+    if !with(|s| s.tab_closing.remove(&browser)) {
+        return false;
+    }
+    let Some(shared) = shared() else { return true };
+    let Some((view, _)) = shared.registry.browser(browser) else {
+        return true;
+    };
+    post_to_ui(Box::new(move || {
+        let released = with(|s| {
+            let entry = s.views.get_mut(&view)?;
+            let root = s.windows.get(&entry.window)?.root.clone();
+            Some((root, entry.view.take()))
+        });
+        if let Some((root, Some(browser_view))) = released {
+            let mut handle = View::from(&browser_view);
+            root.remove_child_view(Some(&mut handle));
+            // `browser_view` and `handle` drop here: the last reference to the Views object.
+        }
+    }));
+    true
 }
 
 /// Closes a browser. `force` skips the page's own close handling, used for a crashed renderer.
@@ -270,6 +345,9 @@ fn create_view(view: ViewId, window: WindowId, spec: &ViewSpec) -> Outcome {
     let Some(shared) = shared() else {
         return Outcome::Failed("not installed");
     };
+    if profile_delayed() {
+        return Outcome::Retry;
+    }
     if !with(|s| s.windows.contains_key(&window)) {
         return Outcome::Failed("unknown window");
     }
@@ -324,7 +402,7 @@ fn create_view(view: ViewId, window: WindowId, spec: &ViewSpec) -> Outcome {
             ViewEntry {
                 window,
                 kind: spec.kind,
-                view: browser_view.clone(),
+                view: Some(browser_view.clone()),
                 browser: None,
                 counted: false,
                 cancelled,
@@ -399,7 +477,11 @@ fn show(view: ViewId) {
             .iter()
             .filter_map(|id| {
                 let candidate = s.views.get(id)?;
-                (candidate.kind == ViewKind::Content).then(|| (*id, candidate.view.clone()))
+                candidate
+                    .view
+                    .clone()
+                    .filter(|_| candidate.kind == ViewKind::Content)
+                    .map(|v| (*id, v))
             })
             .collect();
         Some((window, siblings))
@@ -442,7 +524,7 @@ fn log_layout(window: WindowId) {
                 .iter()
                 .filter_map(|id| {
                     let view = s.views.get(id)?;
-                    Some((*id, view.kind, view.view.clone()))
+                    Some((*id, view.kind, view.view.clone()?))
                 })
                 .collect::<Vec<_>>(),
         )
@@ -497,8 +579,9 @@ pub(crate) fn browser_created(view: ViewId, browser: Browser) {
     post_to_ui(Box::new(pump));
 }
 
-/// `on_before_close`: the browser is gone. Removes the view from the layout and reports `Closed`,
-/// unless the app is quitting. Closes the window when it was the last view.
+/// `on_before_close`: the browser is gone. Removes the view from the layout. `Closed` is reported
+/// unless the app is quitting. During a close attempt it is held until the attempt commits or is
+/// cancelled, so `WindowClosing` always goes out before any `Closed` of the same window.
 pub(crate) fn browser_closed(view: ViewId) {
     let Some(shared) = shared() else { return };
     let removed = with(|s| {
@@ -510,9 +593,16 @@ pub(crate) fn browser_closed(view: ViewId) {
             }
             None => (None, false),
         };
-        Some((entry, root, empty))
+        let held = match s.attempts.get_mut(&entry.window) {
+            Some(buffer) => {
+                buffer.push(view);
+                true
+            }
+            None => false,
+        };
+        Some((entry, root, empty, held))
     });
-    let Some((entry, root, empty)) = removed else {
+    let Some((entry, root, empty, held)) = removed else {
         return;
     };
     if let Some(browser) = &entry.browser {
@@ -522,28 +612,30 @@ pub(crate) fn browser_closed(view: ViewId) {
         shared.live[Shared::live_index(entry.kind)].fetch_sub(1, Ordering::SeqCst);
     }
     shared.registry.remove_view(view);
-    let quitting = quitting();
-    if !quitting {
+    if !held && !quitting() {
         shared.emit(EngineEvent::Closed { view });
     }
-    elog!("view closed view={view} window_empty={empty} quitting={quitting}");
+    elog!("view closed view={view} window_empty={empty} held={held}");
 
     // Detach and close outside the callback, so CEF finishes this close first.
     let window_id = entry.window;
     let browser_view = entry.view;
     post_to_ui(Box::new(move || {
-        if let Some(root) = root {
+        if let (Some(root), Some(browser_view)) = (root, browser_view) {
             let mut handle = View::from(&browser_view);
             root.remove_child_view(Some(&mut handle));
         }
-        if empty {
+        // A close attempt in progress goes on with the browsers still open.
+        if empty || held {
             close_window(window_id);
         }
+        maybe_quit();
     }));
 }
 
 /// `on_render_process_terminated`: the renderer is gone. Report it, and close the browser so its
-/// view leaves the layout. A crashed sidebar is not left behind next to its replacement.
+/// view leaves the layout. A crashed sidebar is not left behind next to its replacement. The close is
+/// posted, not done inside the callback.
 pub(crate) fn browser_crashed(view: ViewId) {
     let Some(shared) = shared() else { return };
     let browser = with(|s| s.views.get(&view).and_then(|entry| entry.browser.clone()));
@@ -551,7 +643,9 @@ pub(crate) fn browser_crashed(view: ViewId) {
         shared.emit(EngineEvent::Crashed { view });
     }
     match browser {
-        Some(browser) => close_browser(&browser, true),
+        Some(browser) => {
+            post_to_ui(Box::new(move || close_browser(&browser, true)));
+        }
         None => elog!("crash without browser view={view}"),
     }
 }
@@ -564,36 +658,132 @@ fn close_window(window: WindowId) {
     }
 }
 
-/// `WindowDelegate::can_close`, called before the window closes. The first call for a window starts
-/// its close: `WindowClosing` goes out first, the engine enters the quitting state, and views still
-/// being created are cancelled. Then every browser is asked to close. The window closes when all of
-/// them accept.
+/// `WindowDelegate::can_close`. The close has a commit point.
+///
+/// 1. A close attempt starts. Browsers are asked to close, content browsers first and the sidebar
+///    last. A browser that does not close (its unload handler cancelled, or the close is pending)
+///    ends the attempt: nothing is committed, the window stays open, and RPCs and commands keep
+///    working. `Closed` events held during the attempt are then sent for the browsers that did close.
+/// 2. Every browser agreed (or the close is forced). The commit: the engine enters the quitting
+///    state, `WindowClosing` goes out first, creations still pending are cancelled, and the held
+///    `Closed` events follow. The window then closes.
+///
+/// Once committed, the window closes without asking again.
 pub(crate) fn can_close_window(window: WindowId) -> bool {
+    CLOSE_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
     let Some(shared) = shared() else { return true };
-    let first = with(|s| s.closing.insert(window));
-    if first {
-        shared.quitting.store(true, Ordering::SeqCst);
-        shared.emit(EngineEvent::WindowClosing { window });
-        elog!("window closing window={window}");
-        cancel_pending(window, &shared);
+    if with(|s| s.committed.contains(&window)) {
+        return true;
     }
+    let forced = shared.force.load(Ordering::SeqCst);
     let browsers: Vec<Browser> = with(|s| {
         let Some(entry) = s.windows.get(&window) else {
             return Vec::new();
         };
-        entry
+        let mut found: Vec<(ViewKind, Browser)> = entry
             .views
             .iter()
-            .filter_map(|id| s.views.get(id)?.browser.clone())
-            .collect()
+            .filter_map(|id| {
+                let view = s.views.get(id)?;
+                Some((view.kind, view.browser.clone()?))
+            })
+            .collect();
+        // Content browsers first: the sidebar is closed only after every content browser agreed.
+        found.sort_by_key(|(kind, _)| *kind == ViewKind::Sidebar);
+        found.into_iter().map(|(_, browser)| browser).collect()
     });
-    let mut allowed = true;
-    for browser in browsers {
-        if let Some(host) = browser.host() {
-            allowed &= host.try_close_browser() != 0;
+    with(|s| {
+        s.attempts.entry(window).or_default();
+    });
+    let mut agreed = true;
+    for browser in &browsers {
+        if forced {
+            close_browser(browser, true);
+            continue;
+        }
+        let Some(host) = browser.host() else { continue };
+        let closed = host.try_close_browser();
+        elog!("try_close browser={} closed={closed}", browser.identifier());
+        if closed == 0 {
+            agreed = false;
+            break;
         }
     }
-    allowed
+    if agreed || forced {
+        commit_close(window, &shared);
+        return true;
+    }
+    // Not agreed: either a browser is still deciding (its beforeunload confirmation is pending) or
+    // it stayed. The answer, not this return value, decides: `unload_answered` cancels the attempt
+    // on "stay", and re-runs the close on "leave". The attempt stays open until one of those.
+    false
+}
+
+/// True while a close attempt is in progress for the window of `browser`. A beforeunload prompt
+/// that arrives while this is false belongs to a navigation or a reload, not to a close.
+pub(crate) fn close_attempt_active(browser: i32) -> bool {
+    let Some(shared) = shared() else {
+        return false;
+    };
+    let Some((view, _)) = shared.registry.browser(browser) else {
+        return false;
+    };
+    with(|s| {
+        s.views
+            .get(&view)
+            .is_some_and(|v| s.attempts.contains_key(&v.window))
+    })
+}
+
+/// A beforeunload confirmation was answered for `browser`. Only an answer that belongs to a close
+/// attempt does anything: a page's own navigation or reload can raise the same prompt, and it must
+/// never close the window. "Stay" cancels the close attempt of the browser's window: nothing has
+/// committed, so the rest of the app keeps running, and the tabs that already closed in the attempt
+/// are reported. "Leave" lets that browser close; the window's close runs again, so the browsers
+/// still open are asked in turn.
+pub(crate) fn unload_answered(browser: i32, allow: bool) {
+    let Some(shared) = shared() else { return };
+    let Some((view, _)) = shared.registry.browser(browser) else {
+        return;
+    };
+    let Some(window) = with(|s| s.views.get(&view).map(|v| v.window)) else {
+        return;
+    };
+    if !with(|s| s.attempts.contains_key(&window)) {
+        return;
+    }
+    if allow {
+        post_to_ui(Box::new(move || close_window(window)));
+    } else {
+        cancel_attempt(window, &shared);
+    }
+}
+
+/// The commit point: every browser agreed to close.
+fn commit_close(window: WindowId, shared: &Shared) {
+    let held = with(|s| {
+        s.committed.insert(window);
+        s.attempts.remove(&window).unwrap_or_default()
+    });
+    shared.quitting.store(true, Ordering::SeqCst);
+    shared.emit(EngineEvent::WindowClosing { window });
+    elog!("window closing window={window}");
+    cancel_pending(window, shared);
+    for view in held {
+        shared.emit(EngineEvent::Closed { view });
+    }
+}
+
+/// A close that did not commit. The browsers that did close are reported, the rest keep running.
+fn cancel_attempt(window: WindowId, shared: &Shared) {
+    let held = with(|s| s.attempts.remove(&window).unwrap_or_default());
+    elog!(
+        "window close cancelled window={window} closed_views={}",
+        held.len()
+    );
+    for view in held {
+        shared.emit(EngineEvent::Closed { view });
+    }
 }
 
 /// Cancels creation of a closing window's views. Queued creations are removed and reported as
@@ -641,18 +831,40 @@ fn command_view(command: &EngineCommand) -> Option<ViewId> {
     }
 }
 
-/// `WindowDelegate::on_window_destroyed`. Quits the message loop after the last window.
+/// `WindowDelegate::on_window_destroyed`. Views of this window whose browser never existed are
+/// dropped (nothing will report them). Views with a browser are still closing: the loop ends after
+/// the last of them has reported `on_before_close`.
 pub(crate) fn window_destroyed(window: WindowId) {
-    let remaining = with(|s| {
+    let dropped = with(|s| {
         s.windows.remove(&window);
         s.closing.remove(&window);
-        s.windows.len()
+        s.committed.remove(&window);
+        s.attempts.remove(&window);
+        let gone: Vec<ViewId> = s
+            .views
+            .iter()
+            .filter(|(_, v)| v.window == window && v.browser.is_none())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &gone {
+            s.views.remove(id);
+        }
+        gone
     });
     if let Some(shared) = shared() {
+        for view in dropped {
+            shared.registry.remove_view(view);
+        }
         shared.emit(EngineEvent::WindowClosed { window });
     }
-    elog!("window closed window={window} remaining={remaining}");
-    if remaining == 0 {
+    elog!("window closed window={window}");
+    maybe_quit();
+}
+
+/// Ends the message loop once no window and no view is left. Called after the last window closes
+/// and after the last `on_before_close`.
+fn maybe_quit() {
+    if with(|s| s.windows.is_empty() && s.views.is_empty()) {
         quit_message_loop();
     }
 }

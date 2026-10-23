@@ -1,9 +1,9 @@
 //! Platform traits (docs/architecture.md section 5). Operating-system implementations live in
 //! `macos` behind `cfg`. M1 needs only paths and the main-thread hook.
 
-use std::fs::{DirBuilder, Permissions};
+use std::fs::{DirBuilder, OpenOptions, Permissions};
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "macos")]
@@ -41,39 +41,84 @@ impl AppPaths {
 
 /// Makes `path` a private directory of the current user, for data that must not be shared.
 ///
-/// - A missing directory is created with mode 0700 (its missing parents with the default mode).
-/// - An existing path must be a real directory: a symlink is refused, not followed.
-/// - It must be owned by the current user.
-/// - A looser mode (any group or other bits) is tightened to 0700. A stricter mode is kept.
+/// The check uses the open file, not the path, so nothing can be swapped between the check and the
+/// change:
+/// - the leaf is opened with `O_DIRECTORY | O_NOFOLLOW`: a symlink or a file is refused;
+/// - `fstat` on that descriptor: the owner must be the current user;
+/// - `fchmod` on that descriptor: the mode becomes exactly 0700 (a stricter mode is changed too).
+///
+/// Path components below `$HOME` or `$TMPDIR` must not be symlinks (`O_NOFOLLOW` only covers the
+/// last component). The parent must be owned by the current user or by root. A missing directory is
+/// created with mode 0700; its missing parents are created with the default mode.
 pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
-    match std::fs::symlink_metadata(path) {
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-                std::fs::create_dir_all(parent)?;
-            }
-            DirBuilder::new().mode(0o700).create(path)?;
+    let uid = current_uid();
+    let base = private_base(path);
+    // Checked before anything is created: a link in the path must not be followed for creation.
+    reject_symlinks_below(path, base.as_deref())?;
+    if std::fs::symlink_metadata(path).is_err_and(|e| e.kind() == io::ErrorKind::NotFound) {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
         }
-        Err(error) => return Err(error),
+        DirBuilder::new().mode(0o700).create(path)?;
     }
-    let meta = std::fs::symlink_metadata(path)?;
-    if meta.file_type().is_symlink() {
-        return Err(io::Error::other(format!("{} is a symlink", path.display())));
-    }
-    if !meta.is_dir() {
-        return Err(io::Error::other(format!(
-            "{} is not a directory",
-            path.display()
-        )));
-    }
-    if meta.uid() != current_uid() {
+    let dir = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|e| io::Error::other(format!("{}: {e}", path.display())))?;
+    let meta = dir.metadata()?;
+    if meta.uid() != uid {
         return Err(io::Error::other(format!(
             "{} is not owned by the current user",
             path.display()
         )));
     }
-    if meta.permissions().mode() & 0o077 != 0 {
-        std::fs::set_permissions(path, Permissions::from_mode(0o700))?;
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        let parent_meta = std::fs::metadata(parent)?;
+        if parent_meta.uid() != uid && parent_meta.uid() != 0 {
+            return Err(io::Error::other(format!(
+                "the parent of {} is not owned by the user",
+                path.display()
+            )));
+        }
+    }
+    if meta.permissions().mode() & 0o777 != 0o700 {
+        dir.set_permissions(Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// `$HOME` or `$TMPDIR`, whichever the path lies below. Symlinks are checked below that base only:
+/// the system's own links above it (on macOS `/var` is a link) are not the user's to control.
+fn private_base(path: &Path) -> Option<PathBuf> {
+    ["HOME", "TMPDIR"]
+        .iter()
+        .filter_map(|key| std::env::var_os(key).map(PathBuf::from))
+        .filter(|base| path.starts_with(base))
+        .max_by_key(|base| base.as_os_str().len())
+}
+
+/// Refuses a symlink in any component of `path` below `base`, the leaf included.
+fn reject_symlinks_below(path: &Path, base: Option<&Path>) -> io::Result<()> {
+    let Some(base) = base else { return Ok(()) };
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component);
+        if !current.starts_with(base) || current.as_os_str().len() <= base.as_os_str().len() {
+            continue;
+        }
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(io::Error::other(format!(
+                    "{} is a symbolic link",
+                    current.display()
+                )));
+            }
+            Ok(_) => {}
+            // Not created yet: nothing below it exists either.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error),
+        }
     }
     Ok(())
 }
@@ -126,20 +171,45 @@ mod tests {
     }
 
     #[test]
-    fn tightens_a_looser_mode_and_keeps_a_stricter_one() {
+    fn normalises_the_mode_to_0700_in_both_directions() {
         let root = scratch("modes");
-        let loose = root.join("loose");
-        std::fs::create_dir(&loose).expect("dir");
-        std::fs::set_permissions(&loose, Permissions::from_mode(0o755)).expect("chmod");
-        ensure_private_dir(&loose).expect("validate");
-        assert_eq!(mode(&loose), 0o700);
+        for (name, start) in [("loose", 0o755), ("strict", 0o500), ("private", 0o700)] {
+            let dir = root.join(name);
+            std::fs::create_dir(&dir).expect("dir");
+            std::fs::set_permissions(&dir, Permissions::from_mode(start)).expect("chmod");
+            ensure_private_dir(&dir).expect("validate");
+            assert_eq!(mode(&dir), 0o700, "{name} starts at {start:o}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
-        let strict = root.join("strict");
-        std::fs::create_dir(&strict).expect("dir");
-        std::fs::set_permissions(&strict, Permissions::from_mode(0o500)).expect("chmod");
-        ensure_private_dir(&strict).expect("validate");
-        assert_eq!(mode(&strict), 0o500, "a stricter mode is left alone");
-        std::fs::set_permissions(&strict, Permissions::from_mode(0o700)).expect("restore");
+    #[test]
+    fn trailing_slash_is_the_same_directory() {
+        let root = scratch("slash");
+        let dir = root.join("d");
+        ensure_private_dir(&dir).expect("create");
+        let with_slash = PathBuf::from(format!("{}/", dir.display()));
+        ensure_private_dir(&with_slash).expect("validate with slash");
+        assert_eq!(mode(&dir), 0o700);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_symlinked_parent_below_the_temp_dir_is_refused() {
+        let root = scratch("parent-link");
+        let real = root.join("real");
+        std::fs::create_dir(&real).expect("dir");
+        let link = root.join("link");
+        symlink(&real, &link).expect("symlink");
+        let through = link.join("child");
+        assert!(
+            ensure_private_dir(&through).is_err(),
+            "a link in the path must not be followed"
+        );
+        assert!(
+            !real.join("child").exists(),
+            "nothing is created through the link"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

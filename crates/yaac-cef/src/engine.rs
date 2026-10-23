@@ -29,8 +29,10 @@ pub type Job = Box<dyn FnOnce() + Send>;
 
 /// Coalescing window for navigation, title and load-state events.
 const FLUSH_MS: i64 = 50;
-/// Popup reports allowed per opener in one second.
+/// Popup reports allowed per opener in one second, for popups from a user gesture.
 const POPUPS_PER_SECOND: usize = 4;
+/// The same for popups without a user gesture: a smaller budget.
+const POPUPS_PER_SECOND_NON_GESTURE: usize = 2;
 
 /// What the host supplies before the engine starts.
 pub struct EngineSettings {
@@ -63,8 +65,13 @@ pub(crate) struct Shared {
     pub(crate) rpc_answered: AtomicU64,
     /// RPCs accepted and not yet answered.
     pub(crate) rpc_inflight: AtomicUsize,
-    /// Set when a window starts closing. Engine-wide: M1 has one window.
+    /// Set at the commit point of a window close (every browser agreed). Engine-wide: M1 has one
+    /// window. Before it, a cancelled close changes nothing.
     pub(crate) quitting: AtomicBool,
+    /// Set by `CefEngine::quit`: close without asking the browsers. Test and error paths only.
+    pub(crate) force: AtomicBool,
+    /// Events sent to the host so far (each `flush` counts what it sends).
+    pub(crate) flushed: AtomicU64,
     /// Live views per kind: `[sidebar, content]`.
     pub(crate) live: [AtomicUsize; 2],
     pub(crate) coalescer: Mutex<Coalescer>,
@@ -102,6 +109,7 @@ impl Shared {
         for event in batch {
             // The receiver lives as long as the host. A send error means the host is shutting down.
             let _ = self.events.send(event);
+            self.flushed.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -115,10 +123,26 @@ impl Shared {
         }
     }
 
-    pub(crate) fn allow_popup(&self, opener: ViewId) -> (bool, u64) {
+    /// True if a popup from `opener` may be reported. Gesture and non-gesture popups have separate
+    /// budgets (see `PopupLimiter`).
+    pub(crate) fn allow_popup(&self, opener: ViewId, user_gesture: bool) -> bool {
         match self.popups.lock() {
-            Ok(mut limiter) => (limiter.allow(opener, Instant::now()), limiter.suppressed()),
-            Err(_) => (false, 0),
+            Ok(mut limiter) => limiter.allow(opener, user_gesture, Instant::now()),
+            Err(_) => false,
+        }
+    }
+
+    /// Logs how many popups were suppressed since the last summary, at most once a second.
+    pub(crate) fn log_popup_summary(&self) {
+        let summary = self
+            .popups
+            .lock()
+            .ok()
+            .and_then(|mut limiter| limiter.take_summary(Instant::now()));
+        if let Some(count) = summary {
+            crate::log::line(format_args!(
+                "popups suppressed count={count} (last second)"
+            ));
         }
     }
 }
@@ -155,10 +179,16 @@ impl CefEngine {
             rpc_answered: AtomicU64::new(0),
             rpc_inflight: AtomicUsize::new(0),
             quitting: AtomicBool::new(false),
+            force: AtomicBool::new(false),
+            flushed: AtomicU64::new(0),
             live: [AtomicUsize::new(0), AtomicUsize::new(0)],
             coalescer: Mutex::new(Coalescer::default()),
             flush_scheduled: AtomicBool::new(false),
-            popups: Mutex::new(PopupLimiter::new(POPUPS_PER_SECOND, Duration::from_secs(1))),
+            popups: Mutex::new(PopupLimiter::new(
+                POPUPS_PER_SECOND,
+                POPUPS_PER_SECOND_NON_GESTURE,
+                Duration::from_secs(1),
+            )),
         });
         let _ = GLOBAL.set(shared.clone());
         Self { shared }
@@ -168,11 +198,24 @@ impl CefEngine {
         self.shared.clone()
     }
 
-    /// Closes every window. The message loop ends when the last window has closed, and the
-    /// process exits with `code`.
+    /// Asks every window to close, as Cmd-Q and the Apple Event quit do. Each close goes through the
+    /// commit point in `ui::can_close_window`, so a browser that cancels (an unload handler) keeps
+    /// the app running.
+    pub fn close_windows(&self) {
+        request_quit();
+    }
+
+    /// The exit code the process returns if the message loop ends now. A harness sets 1 until it has
+    /// passed, so a window that closes early fails the run instead of passing it.
+    pub fn set_exit_code(&self, code: i32) {
+        self.shared.exit_code.store(code, Ordering::SeqCst);
+    }
+
+    /// Quits with `code`, closing the windows without asking the browsers. Use it for harness and
+    /// error exits. The message loop ends once the last window is gone.
     pub fn quit(&self, code: i32) {
         self.shared.exit_code.store(code, Ordering::SeqCst);
-        self.shared.quitting.store(true, Ordering::SeqCst);
+        self.shared.force.store(true, Ordering::SeqCst);
         request_quit();
     }
 
@@ -211,6 +254,12 @@ impl CefEngine {
     /// Sends queued events now, without waiting for the flush timer.
     pub fn flush_events(&self) {
         self.shared.flush();
+    }
+
+    /// Events sent to the host so far. The host waits until it has forwarded this many before it
+    /// shuts its core down, so the last events reach the store.
+    pub fn events_flushed(&self) -> u64 {
+        self.shared.flushed.load(Ordering::SeqCst)
     }
 
     /// Clicks at (x, y) in a view with a trusted mouse event: a user gesture. Test builds only.
@@ -274,6 +323,30 @@ pub(crate) fn post_after(job: Job, delay_ms: i64) -> bool {
         post_task(ThreadId::UI, Some(&mut task)) != 0
     } else {
         post_delayed_task(ThreadId::UI, Some(&mut task), delay_ms) != 0
+    }
+}
+
+/// Dev and test hooks. Each one is compiled only into debug builds and `dev-tools` builds.
+#[cfg(any(debug_assertions, feature = "dev-tools"))]
+pub mod test_hooks {
+    use super::*;
+
+    /// Answers the next `n` unload (beforeunload) confirmations with "stay": the close is cancelled.
+    pub fn cancel_next_unloads(n: u32) {
+        crate::client::UNLOAD_CANCELS.store(n, Ordering::SeqCst);
+        crate::log::dev_log!("test hook: cancel_next_unloads({n})");
+    }
+
+    /// Window close attempts entered so far. A tab close must not add to this.
+    pub fn window_close_attempts() -> u64 {
+        crate::ui::CLOSE_ATTEMPTS.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Makes new profiles look not ready for `delay` after the call, so a `CreateView` stays pending.
+    pub fn delay_profile_readiness(delay: Duration) {
+        if let Ok(mut slot) = crate::ui::PROFILE_DELAY.lock() {
+            *slot = Some((Instant::now(), delay));
+        }
     }
 }
 

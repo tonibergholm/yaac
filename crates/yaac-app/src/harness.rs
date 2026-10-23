@@ -41,7 +41,56 @@ pub enum Stages {
     /// Creates a window and a view whose profile is still initializing, then quits at once. The
     /// process must exit promptly with the pending creation cancelled.
     QuitDuringCreate,
+    /// A window with a sidebar and three content views: closing one tab (a middle one, one with an
+    /// unload prompt) and then the last content view must not close the window.
+    TabClose,
 }
+
+/// Every probe the remote page must report, by name. A missing name fails the E-IPC-1 stage, so a
+/// probe that silently stops running cannot hide a regression.
+const REMOTE_PROBES: &[&str] = &[
+    "fetch-get-rpc",
+    "fetch-post-text-rpc",
+    "fetch-post-json-rpc",
+    "fetch-post-nocors-rpc",
+    "fetch-credentials-rpc",
+    "fetch-sidebar-page",
+    "xhr-post-text-rpc",
+    "xhr-post-json-rpc",
+    "xhr-get-sidebar-page",
+    "form-post-rpc",
+    "anchor-click-app",
+    "window-open-app",
+    "iframe-app-sidebar",
+    "srcdoc-fetch-rpc",
+    "data-iframe-fetch-rpc",
+    "javascript-iframe-rpc",
+    "blob-iframe-rpc",
+    "iframe-redirect-app",
+    "iframe-meta-refresh-app",
+    "sw-register-fetch-rpc",
+    "window-open-named-app",
+    "anchor-blank-noopener-app",
+    "link-prerender-app",
+    "anchor-ping-app",
+    "link-preload-header-app",
+    "websocket-app",
+    "request-navigate-app",
+    "postmessage-sidebar",
+];
+
+/// Sidebar probes whose script is known to stall after a refused navigation: the attempt is still
+/// required to be refused (no escape), and the stall is printed as a finding. Any other stall fails.
+const KNOWN_SIDEBAR_STALLS: &[(&str, &str)] = &[
+    (
+        "iframe-http",
+        "a refused subframe navigation leaves the probe script waiting",
+    ),
+    (
+        "anchor-blank",
+        "a target=_blank click from the UI page leaves the probe script waiting",
+    ),
+];
 
 /// Percent-encodes an HTML page into a `data:` URL. Nothing leaves the machine.
 pub fn data_url(html: &str) -> String {
@@ -63,8 +112,63 @@ pub async fn run(
     events: UnboundedReceiver<EngineEvent>,
     calls: UnboundedReceiver<(UiCaller, Request)>,
 ) {
+    // Until the stages pass, a window that closes early is a failed run.
+    engine.set_exit_code(1);
+    if stages == Stages::TabClose {
+        let outcome = match Site::start() {
+            Ok(site) => {
+                let mut harness = Harness {
+                    engine: engine.clone(),
+                    events,
+                    history: Vec::new(),
+                    cursor: 0,
+                    calls,
+                    calls_seen: Vec::new(),
+                    site,
+                };
+                tab_close(&mut harness).await
+            }
+            Err(error) => Err(format!("site: {error}")),
+        };
+        match outcome {
+            Ok(()) => {
+                engine.set_exit_code(0);
+                println!("HARNESS result=pass stages=TabClose");
+                engine.quit(0);
+            }
+            Err(reason) => {
+                println!("HARNESS result=fail reason={reason}");
+                engine.quit(1);
+            }
+        }
+        return;
+    }
     if stages == Stages::QuitDuringCreate {
-        quit_during_create(&engine);
+        let outcome = match Site::start() {
+            Ok(site) => {
+                let mut harness = Harness {
+                    engine: engine.clone(),
+                    events,
+                    history: Vec::new(),
+                    cursor: 0,
+                    calls,
+                    calls_seen: Vec::new(),
+                    site,
+                };
+                quit_during_create(&mut harness).await
+            }
+            Err(error) => Err(format!("site: {error}")),
+        };
+        match outcome {
+            Ok(()) => {
+                engine.set_exit_code(0);
+                println!("HARNESS result=pass stages={stages:?}");
+            }
+            Err(reason) => {
+                println!("HARNESS result=fail reason={reason}");
+                engine.quit(1);
+            }
+        }
         return;
     }
     let site = match Site::start() {
@@ -96,20 +200,32 @@ pub async fn run(
     }
 }
 
-/// A view created on a profile that is still initializing, then a quit. The pending creation must be
-/// cancelled and the window closed without waiting for it.
-fn quit_during_create(engine: &CefEngine) {
+/// Closing tabs must not close the window. The window has a sidebar and three content views; the
+/// middle one has an unload prompt. Closing it reports `Closed` only; the window stays, the other
+/// views and the sidebar keep working, and no close attempt is entered. Then the last content view
+/// is closed: the sidebar remains, so the window stays open too.
+async fn tab_close(harness: &mut Harness) -> Result<(), String> {
     let window = WindowId::new();
-    engine.send(EngineCommand::CreateWindow {
+    let sidebar = ViewId(1);
+    let first = ViewId(2);
+    let middle = ViewId(3);
+    let last = ViewId(4);
+    let page_first = data_url("<title>tab-first</title><p>first</p>");
+    let page_last = data_url("<title>tab-last</title><p>last</p>");
+    let page_middle = data_url(
+        "<title>tab-middle</title><body style=\"margin:0\"><script>window.onbeforeunload = function () { return 'stay?'; };</script><div style=\"width:100vw;height:100vh\"></div></body>",
+    );
+    harness.mark();
+    harness.send(EngineCommand::CreateWindow {
         window,
         spec: WindowSpec {
-            title: "quit harness".into(),
-            width: 800,
-            height: 500,
+            title: "tabs".into(),
+            width: 1000,
+            height: 640,
         },
     });
-    engine.send(EngineCommand::CreateView {
-        view: ViewId(1),
+    harness.send(EngineCommand::CreateView {
+        view: sidebar,
         window,
         spec: ViewSpec {
             kind: ViewKind::Sidebar,
@@ -117,8 +233,153 @@ fn quit_during_create(engine: &CefEngine) {
             url: SIDEBAR_URL.into(),
         },
     });
-    engine.send(EngineCommand::CreateView {
-        view: ViewId(2),
+    let profile = ProfileId::new();
+    for (view, url) in [
+        (first, page_first.clone()),
+        (middle, page_middle.clone()),
+        (last, page_last.clone()),
+    ] {
+        harness.send(EngineCommand::CreateView {
+            view,
+            window,
+            spec: ViewSpec {
+                kind: ViewKind::Content,
+                profile,
+                url,
+            },
+        });
+    }
+    harness.send(EngineCommand::Show { view: first });
+    harness
+        .expect(
+            "tabs-created",
+            vec![
+                ("created sidebar", created_pred(sidebar)),
+                ("created first", created_pred(first)),
+                ("created middle", created_pred(middle)),
+                ("created last", created_pred(last)),
+                ("title middle", title_pred(middle, "tab-middle")),
+            ],
+        )
+        .await?;
+    harness.engine.click(middle, 100, 100);
+    sleep(Duration::from_millis(300)).await;
+    println!("HARNESS step=tabs-created result=ok");
+
+    // Close the middle tab (it has an unload prompt, answered by the policy: allow).
+    let attempts = yaac_cef::test_hooks::window_close_attempts();
+    harness.mark();
+    harness.send(EngineCommand::Close { view: middle });
+    harness
+        .expect_one("close-middle", "middle closed", closed_pred(middle))
+        .await?;
+    sleep(Duration::from_millis(1000)).await;
+    harness.drain_events();
+    let since = harness
+        .history
+        .iter()
+        .skip(harness.cursor)
+        .filter(|e| {
+            matches!(
+                e,
+                EngineEvent::WindowClosing { .. } | EngineEvent::WindowClosed { .. }
+            )
+        })
+        .count();
+    let entered = yaac_cef::test_hooks::window_close_attempts() - attempts;
+    println!("HARNESS step=close-middle window_events={since} close_attempts={entered}");
+    if since > 0 {
+        return Err(format!(
+            "closing a middle tab closed the window ({since} window events)"
+        ));
+    }
+    if entered > 0 {
+        return Err(format!(
+            "closing a tab entered {entered} window close attempt(s)"
+        ));
+    }
+
+    // The other views are untouched and the sidebar still answers.
+    harness.mark();
+    harness.send(EngineCommand::Load {
+        view: first,
+        url: data_url("<title>first again</title>"),
+    });
+    harness
+        .expect_one(
+            "after-close-load",
+            "first still loads",
+            title_pred(first, "first again"),
+        )
+        .await?;
+    harness
+        .reload_sidebar_and_wait_for_rpc(sidebar, "after-close-rpc")
+        .await?;
+    println!("HARNESS step=tab-middle-after result=ok");
+
+    // Close the last content view. The sidebar remains, so the window stays open.
+    let attempts = yaac_cef::test_hooks::window_close_attempts();
+    harness.mark();
+    harness.send(EngineCommand::Close { view: last });
+    harness
+        .expect_one("close-last", "last closed", closed_pred(last))
+        .await?;
+    sleep(Duration::from_millis(1000)).await;
+    harness.drain_events();
+    let since = harness
+        .history
+        .iter()
+        .skip(harness.cursor)
+        .filter(|e| {
+            matches!(
+                e,
+                EngineEvent::WindowClosing { .. } | EngineEvent::WindowClosed { .. }
+            )
+        })
+        .count();
+    let entered = yaac_cef::test_hooks::window_close_attempts() - attempts;
+    println!("HARNESS step=close-last window_events={since} close_attempts={entered}");
+    if since > 0 || entered > 0 {
+        return Err(format!(
+            "closing the last content view closed the window (events {since}, attempts {entered})"
+        ));
+    }
+    harness
+        .reload_sidebar_and_wait_for_rpc(sidebar, "sidebar-alive")
+        .await?;
+    println!("HARNESS step=tab-close result=ok");
+    Ok(())
+}
+
+/// Quit while a view is still being created. The profile is held not ready (a test hook), so the
+/// `CreateView`s stay queued when the window is asked to close. The commit must cancel them: each
+/// reports `CreateFailed`, `WindowClosing` goes out first, `WindowClosed` last, and the process
+/// exits. A failed expectation fails the run.
+async fn quit_during_create(harness: &mut Harness) -> Result<(), String> {
+    let window = WindowId::new();
+    let sidebar = ViewId(1);
+    let content = ViewId(2);
+    yaac_cef::test_hooks::delay_profile_readiness(Duration::from_secs(3));
+    harness.mark();
+    harness.send(EngineCommand::CreateWindow {
+        window,
+        spec: WindowSpec {
+            title: "quit harness".into(),
+            width: 800,
+            height: 500,
+        },
+    });
+    harness.send(EngineCommand::CreateView {
+        view: sidebar,
+        window,
+        spec: ViewSpec {
+            kind: ViewKind::Sidebar,
+            profile: ProfileId::new(),
+            url: SIDEBAR_URL.into(),
+        },
+    });
+    harness.send(EngineCommand::CreateView {
+        view: content,
         window,
         spec: ViewSpec {
             kind: ViewKind::Content,
@@ -126,8 +387,31 @@ fn quit_during_create(engine: &CefEngine) {
             url: data_url("<title>pending</title>"),
         },
     });
+    // The pass code is set before the close: the loop can end as soon as WindowClosed is sent.
+    harness.engine.set_exit_code(0);
+    harness.engine.close_windows();
     println!("HARNESS step=quit-during-create requested");
-    engine.quit(0);
+    let matched = harness
+        .expect(
+            "quit-during-create",
+            vec![
+                ("window closing", window_closing_pred(window)),
+                ("create failed sidebar", create_failed_pred(sidebar)),
+                ("create failed content", create_failed_pred(content)),
+                ("window closed", window_closed_pred(window)),
+            ],
+        )
+        .await?;
+    let first = matched.first();
+    let last = matched.last();
+    if !matches!(first, Some(EngineEvent::WindowClosing { .. })) {
+        return Err(format!("WindowClosing was not first: {matched:?}"));
+    }
+    if !matches!(last, Some(EngineEvent::WindowClosed { .. })) {
+        return Err(format!("WindowClosed was not last: {matched:?}"));
+    }
+    println!("HARNESS step=quit-during-create result=ok cancelled=2");
+    Ok(())
 }
 
 struct Harness {
@@ -224,6 +508,30 @@ impl Harness {
         preds: Vec<(&str, Pred)>,
     ) -> Result<Vec<EngineEvent>, String> {
         self.expect_within(step, STEP_TIMEOUT, preds).await
+    }
+
+    /// Reloads the sidebar and waits until the engine has answered one more RPC from it. The title is
+    /// not a reliable signal here: the coalescer drops a title that ends where the last one did.
+    async fn reload_sidebar_and_wait_for_rpc(
+        &mut self,
+        sidebar: ViewId,
+        step: &str,
+    ) -> Result<(), String> {
+        let before = self.engine.rpc_answered();
+        self.send(EngineCommand::Load {
+            view: sidebar,
+            url: SIDEBAR_URL.into(),
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if self.engine.rpc_answered() > before {
+                return Ok(());
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        Err(format!(
+            "{step}: the sidebar's RPC was not answered after a reload"
+        ))
     }
 
     async fn expect_one(
@@ -369,31 +677,123 @@ impl Harness {
         self.sidebar_refusals(sidebar).await?;
         self.remote_probes(second).await?;
         self.sidebar_probes(sidebar).await?;
+        if all {
+            self.cancelled_close(sidebar, second).await?;
+        }
 
-        // Close: asynchronous. Each view reports Closed; the window reports WindowClosed last.
+        // Close: closing the window's views commits the window close. The engine reports
+        // `WindowClosing` first and `WindowClosed` last; the views' own `Closed` events are held
+        // back once the close is committed. The process can exit as soon as `WindowClosed` is sent,
+        // so the pass code is set before the close: lifecycle events reach this task through the
+        // engine's 50 ms flush, and the message loop can end before they arrive. A failure after
+        // this point is reported by the `HARNESS result=fail` line (and fails any run that
+        // requires `result=pass`), not by the exit code.
         self.mark();
-        let mut closes = Vec::new();
-        if all {
-            self.send(EngineCommand::Close { view: first });
-            closes.push(("closed first", closed_pred(first)));
+        self.engine.set_exit_code(0);
+        // A window close, as the red button or Cmd-Q makes it. Closing views one by one is a tab
+        // close and leaves the window open.
+        self.engine.close_windows();
+        let first = self
+            .expect(
+                "close",
+                vec![("window closing", window_closing_pred(window))],
+            )
+            .await?;
+        if !matches!(first.last(), Some(EngineEvent::WindowClosing { .. })) {
+            return Err(format!("WindowClosing was not seen: {first:?}"));
         }
-        self.send(EngineCommand::Close { view: second });
-        self.send(EngineCommand::Close { view: sidebar });
-        closes.push(("closed second", closed_pred(second)));
-        closes.push(("closed sidebar", closed_pred(sidebar)));
-        if all {
-            // The isolation views are closed with the rest.
-            let iso_b = ViewId(4);
-            self.send(EngineCommand::Close { view: iso_b });
-            closes.push(("closed iso_b", closed_pred(iso_b)));
-        }
-        closes.push(("window closed", window_closed_pred(window)));
-        let matched = self.expect("close", closes).await?;
-        match matched.last() {
-            Some(EngineEvent::WindowClosed { .. }) => {}
-            other => return Err(format!("WindowClosed was not last: {other:?}")),
+        let last = self
+            .expect(
+                "window closed",
+                vec![("window closed", window_closed_pred(window))],
+            )
+            .await?;
+        if !matches!(last.last(), Some(EngineEvent::WindowClosed { .. })) {
+            return Err(format!("WindowClosed was not last: {last:?}"));
         }
         println!("HARNESS step=close result=ok");
+        Ok(())
+    }
+
+    /// A window close that the page cancels. The content page holds a beforeunload confirmation (set
+    /// up after a trusted click, so Chromium asks). The harness answers the confirmation with "stay"
+    /// once. The close must stop at the commit point: no `WindowClosing`, no `Closed`, the sidebar
+    /// keeps answering RPCs, and the content view keeps taking commands. A later close, with the
+    /// confirmation allowed, goes through.
+    ///
+    /// The first content view has no confirmation. It is closed beforehand, so the cancelled attempt
+    /// has nothing to report. (A tab without a confirmation that closes before a cancelling one is
+    /// reported as closed; see the README.)
+    async fn cancelled_close(&mut self, sidebar: ViewId, second: ViewId) -> Result<(), String> {
+        let page = data_url(
+            "<title>unload</title><body style=\"margin:0\"><script>window.onbeforeunload = function () { return 'stay?'; };</script><div style=\"width:100vw;height:100vh\"></div></body>",
+        );
+        self.mark();
+        self.send(EngineCommand::Load {
+            view: second,
+            url: page,
+        });
+        self.expect_one(
+            "unload-page",
+            "unload page loaded",
+            title_pred(second, "unload"),
+        )
+        .await?;
+        sleep(Duration::from_millis(300)).await;
+        self.engine.click(second, 100, 100);
+        sleep(Duration::from_millis(300)).await;
+
+        self.drain_events();
+        let start = self.history.len();
+        yaac_cef::test_hooks::cancel_next_unloads(1);
+        self.engine.close_windows();
+        sleep(Duration::from_millis(2000)).await;
+        self.drain_events();
+        let leaked: Vec<String> = self.history[start..]
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    EngineEvent::WindowClosing { .. }
+                        | EngineEvent::Closed { .. }
+                        | EngineEvent::WindowClosed { .. }
+                        | EngineEvent::CreateFailed { .. }
+                        | EngineEvent::Crashed { .. }
+                )
+            })
+            .map(|e| format!("{e:?}"))
+            .collect();
+        if !leaked.is_empty() {
+            return Err(format!(
+                "cancelled close still emitted lifecycle events: {leaked:?}"
+            ));
+        }
+
+        self.mark();
+        self.send(EngineCommand::Load {
+            view: sidebar,
+            url: SIDEBAR_URL.into(),
+        });
+        self.expect_within(
+            "cancelled-close-rpc",
+            Duration::from_secs(5),
+            vec![("sidebar rpc after cancel", title_pred(sidebar, "rpc-ok"))],
+        )
+        .await?;
+        self.mark();
+        self.send(EngineCommand::Load {
+            view: second,
+            url: data_url("<title>after cancel</title>"),
+        });
+        self.expect_one(
+            "cancelled-close-content",
+            "content view still takes commands",
+            title_pred(second, "after cancel"),
+        )
+        .await?;
+        println!(
+            "HARNESS step=cancelled-close result=ok window_closing=none closed_events=none rpc=ok content=ok"
+        );
         Ok(())
     }
 
@@ -649,6 +1049,19 @@ impl Harness {
         self.send(EngineCommand::Load { view: second, url });
         self.report("e-ipc-1", "e-ipc-done", Duration::from_secs(60))
             .await?;
+        let missing: Vec<&str> = REMOTE_PROBES
+            .iter()
+            .copied()
+            .filter(|name| self.site.report(name).is_none())
+            .collect();
+        for name in REMOTE_PROBES {
+            if let Some(result) = self.site.report(name) {
+                println!("HARNESS probe name={name} result={result}");
+            }
+        }
+        if !missing.is_empty() {
+            return Err(format!("E-IPC-1: probes did not report: {missing:?}"));
+        }
         sleep(Duration::from_millis(1500)).await;
         self.drain_calls();
         let content_calls: Vec<&UiCaller> = self
@@ -749,6 +1162,10 @@ impl Harness {
             let completed = outcome.is_ok();
             if completed {
                 finished += 1;
+            } else if !KNOWN_SIDEBAR_STALLS.iter().any(|(name, _)| *name == kind) {
+                return Err(format!(
+                    "sidebar probe {kind} stalled and is not a known stall"
+                ));
             }
             let escaped = self.history[self.cursor..].iter().any(|e| {
                 matches!(e, EngineEvent::Navigated { view, url, .. } if *view == sidebar && !url.starts_with("app://ui/"))
@@ -872,4 +1289,12 @@ impl yaac_cef::RpcHandler for StubRpc {
             }
         })
     }
+}
+
+fn window_closing_pred(window: WindowId) -> Pred {
+    Box::new(move |e| matches!(e, EngineEvent::WindowClosing { window: w } if *w == window))
+}
+
+fn create_failed_pred(view: ViewId) -> Pred {
+    Box::new(move |e| matches!(e, EngineEvent::CreateFailed { view: v } if *v == view))
 }
