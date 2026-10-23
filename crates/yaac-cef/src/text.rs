@@ -39,7 +39,10 @@ pub fn redact_url(url: &str) -> String {
         return "<invalid-scheme>".to_owned();
     }
     let scheme = scheme.to_ascii_lowercase();
-    let networked = matches!(scheme.as_str(), "http" | "https" | "app" | "ws" | "wss" | "ftp");
+    let networked = matches!(
+        scheme.as_str(),
+        "http" | "https" | "app" | "ws" | "wss" | "ftp"
+    );
     if !networked {
         return format!("{scheme}:<redacted>");
     }
@@ -78,11 +81,23 @@ mod tests {
 
     #[test]
     fn logs_keep_scheme_and_host_only() {
-        assert_eq!(redact_url("https://user:pw@example.com:8443/a/b?token=1#frag"), "https://example.com:8443");
+        assert_eq!(
+            redact_url("https://user:pw@example.com:8443/a/b?token=1#frag"),
+            "https://example.com:8443"
+        );
         assert_eq!(redact_url("app://ui/api/v1/rpc?x=1"), "app://ui");
-        assert_eq!(redact_url("http://127.0.0.1:9000/report?name=x"), "http://127.0.0.1:9000");
-        assert_eq!(redact_url("data:text/html;base64,PGgxPnNlY3JldDwvaDE+"), "data:<redacted>");
-        assert_eq!(redact_url("javascript:alert(document.cookie)"), "javascript:<redacted>");
+        assert_eq!(
+            redact_url("http://127.0.0.1:9000/report?name=x"),
+            "http://127.0.0.1:9000"
+        );
+        assert_eq!(
+            redact_url("data:text/html;base64,PGgxPnNlY3JldDwvaDE+"),
+            "data:<redacted>"
+        );
+        assert_eq!(
+            redact_url("javascript:alert(document.cookie)"),
+            "javascript:<redacted>"
+        );
         assert_eq!(redact_url("https:///nohost"), "https://");
         assert_eq!(redact_url("no scheme here"), "<no-scheme>");
         assert_eq!(redact_url("bad scheme:x"), "<invalid-scheme>");

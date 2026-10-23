@@ -21,12 +21,18 @@ pub(crate) fn private_dir(path: &Path) -> io::Result<()> {
     }
     let meta = std::fs::symlink_metadata(path)?;
     if meta.file_type().is_symlink() || !meta.is_dir() {
-        return Err(io::Error::other(format!("{} is not a plain directory", path.display())));
+        return Err(io::Error::other(format!(
+            "{} is not a plain directory",
+            path.display()
+        )));
     }
     // SAFETY: getuid takes no arguments, has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
     if meta.uid() != uid {
-        return Err(io::Error::other(format!("{} is not owned by the current user", path.display())));
+        return Err(io::Error::other(format!(
+            "{} is not owned by the current user",
+            path.display()
+        )));
     }
     if meta.permissions().mode() & 0o077 != 0 {
         std::fs::set_permissions(path, Permissions::from_mode(0o700))?;

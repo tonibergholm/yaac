@@ -41,12 +41,19 @@ impl Site {
 
     /// Reports received so far, as `(name, result)`.
     pub fn reports(&self) -> Vec<(String, String)> {
-        self.record.lock().map(|r| r.reports.clone()).unwrap_or_default()
+        self.record
+            .lock()
+            .map(|r| r.reports.clone())
+            .unwrap_or_default()
     }
 
     /// The last value reported under `name`.
     pub fn report(&self, name: &str) -> Option<String> {
-        self.reports().into_iter().rev().find(|(n, _)| n == name).map(|(_, v)| v)
+        self.reports()
+            .into_iter()
+            .rev()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v)
     }
 
     /// The Cookie header of the last `/echo?who=<who>` request.

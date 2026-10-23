@@ -3,8 +3,8 @@
 //! waiting for the core. Page-supplied strings are capped before they are queued, and logs show
 //! URLs as scheme and host only.
 
-use crate::log::elog;
 use crate::engine::Shared;
+use crate::log::elog;
 use crate::nav::NavTracker;
 use crate::text::{cap_title, cap_url, redact_url};
 use crate::ui;
@@ -243,10 +243,16 @@ mod tests {
 
     #[test]
     fn ui_browsers_stay_on_app_ui() {
-        assert!(navigation_allowed(ViewKind::Sidebar, "app://ui/sidebar.html"));
+        assert!(navigation_allowed(
+            ViewKind::Sidebar,
+            "app://ui/sidebar.html"
+        ));
         assert!(navigation_allowed(ViewKind::Sidebar, "app://ui"));
         assert!(navigation_allowed(ViewKind::Sidebar, "APP://UI/x"));
-        assert!(!navigation_allowed(ViewKind::Sidebar, "https://example.com/"));
+        assert!(!navigation_allowed(
+            ViewKind::Sidebar,
+            "https://example.com/"
+        ));
         assert!(!navigation_allowed(ViewKind::Sidebar, "about:blank"));
         assert!(!navigation_allowed(ViewKind::Sidebar, "app://uix/"));
         assert!(!navigation_allowed(ViewKind::Sidebar, "app://other/"));
@@ -254,11 +260,20 @@ mod tests {
 
     #[test]
     fn content_browsers_never_reach_app_urls() {
-        assert!(!navigation_allowed(ViewKind::Content, "app://ui/sidebar.html"));
+        assert!(!navigation_allowed(
+            ViewKind::Content,
+            "app://ui/sidebar.html"
+        ));
         assert!(!navigation_allowed(ViewKind::Content, "App://ui/"));
         assert!(!navigation_allowed(ViewKind::Content, "app:whatever"));
-        assert!(navigation_allowed(ViewKind::Content, "https://example.com/"));
-        assert!(navigation_allowed(ViewKind::Content, "http://127.0.0.1:8080/"));
+        assert!(navigation_allowed(
+            ViewKind::Content,
+            "https://example.com/"
+        ));
+        assert!(navigation_allowed(
+            ViewKind::Content,
+            "http://127.0.0.1:8080/"
+        ));
         assert!(navigation_allowed(ViewKind::Content, "about:blank"));
     }
 }

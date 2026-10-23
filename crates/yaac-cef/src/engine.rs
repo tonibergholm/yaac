@@ -94,7 +94,11 @@ impl Shared {
     /// Sends the queued batch, in order, to the core.
     pub(crate) fn flush(&self) {
         self.flush_scheduled.store(false, Ordering::SeqCst);
-        let batch = self.coalescer.lock().map(|mut c| c.take()).unwrap_or_default();
+        let batch = self
+            .coalescer
+            .lock()
+            .map(|mut c| c.take())
+            .unwrap_or_default();
         for event in batch {
             // The receiver lives as long as the host. A send error means the host is shutting down.
             let _ = self.events.send(event);
@@ -154,10 +158,7 @@ impl CefEngine {
             live: [AtomicUsize::new(0), AtomicUsize::new(0)],
             coalescer: Mutex::new(Coalescer::default()),
             flush_scheduled: AtomicBool::new(false),
-            popups: Mutex::new(PopupLimiter::new(
-                POPUPS_PER_SECOND,
-                Duration::from_secs(1),
-            )),
+            popups: Mutex::new(PopupLimiter::new(POPUPS_PER_SECOND, Duration::from_secs(1))),
         });
         let _ = GLOBAL.set(shared.clone());
         Self { shared }
@@ -301,5 +302,21 @@ wrap_task! {
                 job();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nothing_is_posted_while_the_gate_is_closed() {
+        // Closed until CEF starts. The check happens before any call into CEF, so this runs without
+        // a CEF instance: a refused post returns false and never reaches post_task.
+        assert!(!post_to_ui(Box::new(|| {})));
+        open_gate();
+        close_gate();
+        assert!(!post_to_ui(Box::new(|| {})));
+        assert!(!post_after(Box::new(|| {}), 50));
     }
 }

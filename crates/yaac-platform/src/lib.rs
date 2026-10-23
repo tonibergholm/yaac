@@ -26,7 +26,13 @@ impl AppPaths {
     /// Creates (or validates) every directory with `ensure_private_dir`. Browsing data lives here, so
     /// each one is private to the current user.
     pub fn create_all(&self) -> io::Result<()> {
-        for dir in [&self.config, &self.data, &self.cache, &self.logs, &self.runtime] {
+        for dir in [
+            &self.config,
+            &self.data,
+            &self.cache,
+            &self.logs,
+            &self.runtime,
+        ] {
             ensure_private_dir(dir)?;
         }
         Ok(())
@@ -55,7 +61,10 @@ pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
         return Err(io::Error::other(format!("{} is a symlink", path.display())));
     }
     if !meta.is_dir() {
-        return Err(io::Error::other(format!("{} is not a directory", path.display())));
+        return Err(io::Error::other(format!(
+            "{} is not a directory",
+            path.display()
+        )));
     }
     if meta.uid() != current_uid() {
         return Err(io::Error::other(format!(
@@ -91,14 +100,19 @@ mod tests {
 
     /// A fresh directory under the system temp dir, unique to this test run.
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("yaac-platform-test-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("yaac-platform-test-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch dir");
         dir
     }
 
     fn mode(path: &Path) -> u32 {
-        std::fs::metadata(path).expect("metadata").permissions().mode() & 0o777
+        std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777
     }
 
     #[test]
@@ -138,7 +152,11 @@ mod tests {
         let link = root.join("link");
         symlink(&target, &link).expect("symlink");
         assert!(ensure_private_dir(&link).is_err());
-        assert_eq!(mode(&target), 0o755, "the target of a refused link is not changed");
+        assert_eq!(
+            mode(&target),
+            0o755,
+            "the target of a refused link is not changed"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -162,7 +180,13 @@ mod tests {
             logs: root.join("logs"),
         };
         paths.create_all().expect("create_all");
-        for dir in [&paths.config, &paths.data, &paths.cache, &paths.runtime, &paths.logs] {
+        for dir in [
+            &paths.config,
+            &paths.data,
+            &paths.cache,
+            &paths.runtime,
+            &paths.logs,
+        ] {
             assert_eq!(mode(dir), 0o700, "{}", dir.display());
         }
         // Idempotent: a second run validates and keeps the directories.

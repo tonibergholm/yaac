@@ -11,8 +11,12 @@ pub struct MacPlatform;
 
 impl Platform for MacPlatform {
     fn paths(&self) -> AppPaths {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
-        let tmp = std::env::var_os("TMPDIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
+        let tmp = std::env::var_os("TMPDIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
         // SAFETY: getuid takes no arguments, has no preconditions and cannot fail.
         let uid = unsafe { libc::getuid() };
         paths_from(&home, &tmp, uid)
@@ -21,7 +25,10 @@ impl Platform for MacPlatform {
 
 /// The path layout for a given home, temp dir and uid. Pure, so it can be tested.
 pub fn paths_from(home: &Path, tmp: &Path, uid: u32) -> AppPaths {
-    let support = home.join("Library").join("Application Support").join("yaac");
+    let support = home
+        .join("Library")
+        .join("Application Support")
+        .join("yaac");
     AppPaths {
         config: support.join("config"),
         data: support.join("data"),
@@ -74,7 +81,10 @@ mod tests {
     #[test]
     fn paths_follow_apple_conventions() {
         let paths = paths_from(Path::new("/Users/x"), Path::new("/var/folders/T"), 501);
-        assert_eq!(paths.data, PathBuf::from("/Users/x/Library/Application Support/yaac/data"));
+        assert_eq!(
+            paths.data,
+            PathBuf::from("/Users/x/Library/Application Support/yaac/data")
+        );
         assert_eq!(paths.logs, PathBuf::from("/Users/x/Library/Logs/yaac"));
         assert_eq!(paths.runtime, PathBuf::from("/var/folders/T/yaac-501"));
     }

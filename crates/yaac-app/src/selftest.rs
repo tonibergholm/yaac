@@ -12,8 +12,8 @@ use yaac_api::{
     Snapshot,
 };
 use yaac_cef::CefEngine;
-use yaac_engine::ViewKind;
 use yaac_core::{CoreHandle, Principal};
+use yaac_engine::ViewKind;
 use yaac_model::{ContainerKind, NodeId, NodeKind, ViewId};
 
 const BLANK: &str = "about:blank";

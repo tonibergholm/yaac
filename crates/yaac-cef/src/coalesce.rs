@@ -29,7 +29,10 @@ pub(crate) struct Coalescer {
 impl Coalescer {
     pub(crate) fn push(&mut self, event: EngineEvent) {
         if let Some(key) = coalesce_key(&event)
-            && let Some(slot) = self.pending.iter_mut().find(|e| coalesce_key(e) == Some(key))
+            && let Some(slot) = self
+                .pending
+                .iter_mut()
+                .find(|e| coalesce_key(e) == Some(key))
         {
             *slot = event;
             return;
@@ -137,7 +140,10 @@ mod tests {
             url: "https://a.test/?x".into(),
         });
         let batch = coalescer.take();
-        assert!(matches!(batch[0], EngineEvent::Navigated { nav_gen: 2, .. }));
+        assert!(matches!(
+            batch[0],
+            EngineEvent::Navigated { nav_gen: 2, .. }
+        ));
         assert!(matches!(batch[1], EngineEvent::TitleChanged { .. }));
         assert_eq!(batch.len(), 2);
     }

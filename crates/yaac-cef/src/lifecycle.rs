@@ -125,7 +125,11 @@ pub fn run_browser(
     let mut app = YaacApp::new(Some(hook));
 
     let args = cef::args::Args::new();
-    let code = execute_process(Some(args.as_main_args()), Some(&mut app), std::ptr::null_mut());
+    let code = execute_process(
+        Some(args.as_main_args()),
+        Some(&mut app),
+        std::ptr::null_mut(),
+    );
     if code >= 0 {
         // Not the browser process. Nothing to run here.
         close_gate();
@@ -174,5 +178,9 @@ pub fn run_helper() -> i32 {
     let _library = crate::macos::load_framework(&exe, true);
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
     let mut app = YaacApp::new(None);
-    execute_process(Some(args.as_main_args()), Some(&mut app), std::ptr::null_mut())
+    execute_process(
+        Some(args.as_main_args()),
+        Some(&mut app),
+        std::ptr::null_mut(),
+    )
 }

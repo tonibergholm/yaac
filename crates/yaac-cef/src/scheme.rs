@@ -7,14 +7,16 @@
 //! section 8). No response carries an `Access-Control-*` header.
 
 use crate::assets::Asset;
-use crate::log::elog;
 use crate::engine::Shared;
+use crate::log::elog;
 use crate::rpc::{RPC_PATH, UiCaller};
 use cef::*;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
-use yaac_api::{API_VERSION, ApiError, ApiResult, ErrorCode, Request as ApiRequest, Response as ApiResponse};
+use yaac_api::{
+    API_VERSION, ApiError, ApiResult, ErrorCode, Request as ApiRequest, Response as ApiResponse,
+};
 use yaac_engine::ViewKind;
 
 pub(crate) const SCHEME: &str = "app";
@@ -44,7 +46,9 @@ pub(crate) const UI_CSP: &str = "default-src 'none'; script-src 'self'; style-sr
 /// - CORS_ENABLED: puts `app` on Chromium's list of schemes that accept CORS requests, so remote
 ///   pages could send requests to `app://ui/api`. Remote pages are refused without it (E-IPC-1).
 fn scheme_option_bits() -> i32 {
-    (SchemeOptions::STANDARD.get_raw() | SchemeOptions::SECURE.get_raw() | SchemeOptions::FETCH_ENABLED.get_raw()) as i32
+    (SchemeOptions::STANDARD.get_raw()
+        | SchemeOptions::SECURE.get_raw()
+        | SchemeOptions::FETCH_ENABLED.get_raw()) as i32
 }
 
 pub(crate) fn register(registrar: Option<&mut SchemeRegistrar>) {
@@ -381,10 +385,19 @@ wrap_resource_handler! {
 
 /// Copies the next part of the body into CEF's buffer. Returns 0 at the end of the body.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-fn copy_body(reply: &Mutex<Reply>, data_out: *mut u8, bytes_to_read: i32, bytes_read: Option<&mut i32>) -> i32 {
-    let Some(bytes_read) = bytes_read else { return 0 };
+fn copy_body(
+    reply: &Mutex<Reply>,
+    data_out: *mut u8,
+    bytes_to_read: i32,
+    bytes_read: Option<&mut i32>,
+) -> i32 {
+    let Some(bytes_read) = bytes_read else {
+        return 0;
+    };
     *bytes_read = 0;
-    let Ok(mut reply) = reply.lock() else { return 0 };
+    let Ok(mut reply) = reply.lock() else {
+        return 0;
+    };
     let remaining = reply.body.len() - reply.offset;
     let count = remaining.min(bytes_to_read.max(0) as usize);
     if count == 0 || data_out.is_null() {
@@ -428,7 +441,11 @@ async fn answer_rpc(shared: &Shared, caller: UiCaller, body: &[u8]) -> (i32, Vec
     }
     let response: ApiResponse = shared.rpc.call(caller, request).await;
     shared.rpc_answered.fetch_add(1, Ordering::SeqCst);
-    elog!("rpc answered view={} main_frame={}", caller.view, caller.main_frame);
+    elog!(
+        "rpc answered view={} main_frame={}",
+        caller.view,
+        caller.main_frame
+    );
     (200, serde_json::to_vec(&response).unwrap_or_default())
 }
 
@@ -459,7 +476,11 @@ mod tests {
 
     struct NoRpc;
     impl RpcHandler for NoRpc {
-        fn call(&self, _caller: UiCaller, _request: ApiRequest) -> Pin<Box<dyn Future<Output = ApiResponse> + Send>> {
+        fn call(
+            &self,
+            _caller: UiCaller,
+            _request: ApiRequest,
+        ) -> Pin<Box<dyn Future<Output = ApiResponse> + Send>> {
             unreachable!("the planner never calls the handler")
         }
     }
@@ -469,15 +490,24 @@ mod tests {
     impl UiAssets for CspAssets {
         fn asset(&self, path: &str) -> Option<Asset> {
             match path {
-                "index.html" | "sidebar.html" => Some(Asset { mime: "text/html", body: b"<p>".to_vec() }),
-                "app.js" => Some(Asset { mime: "text/javascript", body: b"1".to_vec() }),
+                "index.html" | "sidebar.html" => Some(Asset {
+                    mime: "text/html",
+                    body: b"<p>".to_vec(),
+                }),
+                "app.js" => Some(Asset {
+                    mime: "text/javascript",
+                    body: b"1".to_vec(),
+                }),
                 _ => None,
             }
         }
     }
 
     fn shared_with(assets: Arc<dyn UiAssets>) -> (Shared, tokio::runtime::Runtime) {
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
         let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
         let shared = Shared {
             events,
@@ -510,8 +540,12 @@ mod tests {
     const CONTENT: i32 = 2;
 
     fn bound(shared: &Shared) {
-        shared.registry.bind_browser(SIDEBAR, ViewId(1), ViewKind::Sidebar);
-        shared.registry.bind_browser(CONTENT, ViewId(2), ViewKind::Content);
+        shared
+            .registry
+            .bind_browser(SIDEBAR, ViewId(1), ViewKind::Sidebar);
+        shared
+            .registry
+            .bind_browser(CONTENT, ViewId(2), ViewKind::Content);
     }
 
     fn status_of(plan: &Plan) -> Option<i32> {
@@ -526,11 +560,35 @@ mod tests {
         let (shared, _rt) = shared_with(Arc::new(EmbeddedAssets::new(&[])));
         bound(&shared);
         let never = || -> PostBody { panic!("the body must not be read for a refused caller") };
-        let unknown = plan(&shared, None, true, "POST", "app://ui/api/v1/rpc", &json_headers(), never);
+        let unknown = plan(
+            &shared,
+            None,
+            true,
+            "POST",
+            "app://ui/api/v1/rpc",
+            &json_headers(),
+            never,
+        );
         assert_eq!(status_of(&unknown), Some(403));
-        let content = plan(&shared, Some(CONTENT), true, "POST", "app://ui/api/v1/rpc", &json_headers(), never);
+        let content = plan(
+            &shared,
+            Some(CONTENT),
+            true,
+            "POST",
+            "app://ui/api/v1/rpc",
+            &json_headers(),
+            never,
+        );
         assert_eq!(status_of(&content), Some(403));
-        let asset = plan(&shared, Some(CONTENT), true, "GET", "app://ui/sidebar.html", &json_headers(), never);
+        let asset = plan(
+            &shared,
+            Some(CONTENT),
+            true,
+            "GET",
+            "app://ui/sidebar.html",
+            &json_headers(),
+            never,
+        );
         assert_eq!(status_of(&asset), Some(403));
     }
 
@@ -540,7 +598,15 @@ mod tests {
         bound(&shared);
         for caller in [None, Some(SIDEBAR), Some(CONTENT)] {
             for method in ["OPTIONS", "PUT", "DELETE", "TRACE"] {
-                let p = plan(&shared, caller, true, method, "app://ui/api/v1/rpc", &json_headers(), || PostBody::Bytes(vec![]));
+                let p = plan(
+                    &shared,
+                    caller,
+                    true,
+                    method,
+                    "app://ui/api/v1/rpc",
+                    &json_headers(),
+                    || PostBody::Bytes(vec![]),
+                );
                 assert_eq!(status_of(&p), Some(405), "{method} from {caller:?}");
             }
         }
@@ -551,24 +617,101 @@ mod tests {
         let (shared, _rt) = shared_with(Arc::new(EmbeddedAssets::new(&[])));
         bound(&shared);
         let body = || PostBody::Bytes(b"{}".to_vec());
-        let ok = plan(&shared, Some(SIDEBAR), true, "POST", "app://ui/api/v1/rpc", &json_headers(), body);
+        let ok = plan(
+            &shared,
+            Some(SIDEBAR),
+            true,
+            "POST",
+            "app://ui/api/v1/rpc",
+            &json_headers(),
+            body,
+        );
         assert!(matches!(ok, Plan::Rpc { .. }));
-        let text = Headers { content_type: "text/plain".into(), origin: "app://ui".into() };
-        assert_eq!(status_of(&plan(&shared, Some(SIDEBAR), true, "POST", "app://ui/api/v1/rpc", &text, body)), Some(415));
-        let foreign = Headers { content_type: "application/json".into(), origin: "https://evil.test".into() };
-        assert_eq!(status_of(&plan(&shared, Some(SIDEBAR), true, "POST", "app://ui/api/v1/rpc", &foreign, body)), Some(403));
-        let no_origin = Headers { content_type: "application/json; charset=utf-8".into(), origin: String::new() };
-        assert!(matches!(plan(&shared, Some(SIDEBAR), true, "POST", "app://ui/api/v1/rpc", &no_origin, body), Plan::Rpc { .. }));
-        assert_eq!(status_of(&plan(&shared, Some(SIDEBAR), true, "GET", "app://ui/api/v1/rpc", &json_headers(), body)), Some(405));
+        let text = Headers {
+            content_type: "text/plain".into(),
+            origin: "app://ui".into(),
+        };
+        assert_eq!(
+            status_of(&plan(
+                &shared,
+                Some(SIDEBAR),
+                true,
+                "POST",
+                "app://ui/api/v1/rpc",
+                &text,
+                body
+            )),
+            Some(415)
+        );
+        let foreign = Headers {
+            content_type: "application/json".into(),
+            origin: "https://evil.test".into(),
+        };
+        assert_eq!(
+            status_of(&plan(
+                &shared,
+                Some(SIDEBAR),
+                true,
+                "POST",
+                "app://ui/api/v1/rpc",
+                &foreign,
+                body
+            )),
+            Some(403)
+        );
+        let no_origin = Headers {
+            content_type: "application/json; charset=utf-8".into(),
+            origin: String::new(),
+        };
+        assert!(matches!(
+            plan(
+                &shared,
+                Some(SIDEBAR),
+                true,
+                "POST",
+                "app://ui/api/v1/rpc",
+                &no_origin,
+                body
+            ),
+            Plan::Rpc { .. }
+        ));
+        assert_eq!(
+            status_of(&plan(
+                &shared,
+                Some(SIDEBAR),
+                true,
+                "GET",
+                "app://ui/api/v1/rpc",
+                &json_headers(),
+                body
+            )),
+            Some(405)
+        );
     }
 
     #[test]
     fn oversized_and_unsupported_bodies_are_refused() {
         let (shared, _rt) = shared_with(Arc::new(EmbeddedAssets::new(&[])));
         bound(&shared);
-        let big = plan(&shared, Some(SIDEBAR), true, "POST", "app://ui/api/v1/rpc", &json_headers(), || PostBody::TooLarge);
+        let big = plan(
+            &shared,
+            Some(SIDEBAR),
+            true,
+            "POST",
+            "app://ui/api/v1/rpc",
+            &json_headers(),
+            || PostBody::TooLarge,
+        );
         assert_eq!(status_of(&big), Some(413));
-        let file = plan(&shared, Some(SIDEBAR), true, "POST", "app://ui/api/v1/rpc", &json_headers(), || PostBody::Unsupported);
+        let file = plan(
+            &shared,
+            Some(SIDEBAR),
+            true,
+            "POST",
+            "app://ui/api/v1/rpc",
+            &json_headers(),
+            || PostBody::Unsupported,
+        );
         assert_eq!(status_of(&file), Some(400));
     }
 
@@ -577,7 +720,15 @@ mod tests {
         let (shared, _rt) = shared_with(Arc::new(EmbeddedAssets::new(&[])));
         bound(&shared);
         shared.quitting.store(true, Ordering::SeqCst);
-        let p = plan(&shared, Some(SIDEBAR), true, "POST", "app://ui/api/v1/rpc", &json_headers(), || PostBody::Bytes(vec![]));
+        let p = plan(
+            &shared,
+            Some(SIDEBAR),
+            true,
+            "POST",
+            "app://ui/api/v1/rpc",
+            &json_headers(),
+            || PostBody::Bytes(vec![]),
+        );
         assert_eq!(status_of(&p), Some(503));
     }
 
@@ -586,27 +737,70 @@ mod tests {
         let (shared, _rt) = shared_with(Arc::new(CspAssets));
         bound(&shared);
         let no_body = || PostBody::Bytes(vec![]);
-        match plan(&shared, Some(SIDEBAR), true, "GET", "app://ui/sidebar.html?x=1#f", &json_headers(), no_body) {
-            Plan::Static { status, csp, mime, .. } => {
+        match plan(
+            &shared,
+            Some(SIDEBAR),
+            true,
+            "GET",
+            "app://ui/sidebar.html?x=1#f",
+            &json_headers(),
+            no_body,
+        ) {
+            Plan::Static {
+                status, csp, mime, ..
+            } => {
                 assert_eq!((status, mime, csp), (200, "text/html", true));
             }
             Plan::Rpc { .. } => panic!("an asset is not an RPC"),
         }
-        match plan(&shared, Some(SIDEBAR), true, "GET", "app://ui/app.js", &json_headers(), no_body) {
-            Plan::Static { status, csp, mime, .. } => {
+        match plan(
+            &shared,
+            Some(SIDEBAR),
+            true,
+            "GET",
+            "app://ui/app.js",
+            &json_headers(),
+            no_body,
+        ) {
+            Plan::Static {
+                status, csp, mime, ..
+            } => {
                 assert_eq!((status, mime, csp), (200, "text/javascript", false));
             }
             Plan::Rpc { .. } => panic!("an asset is not an RPC"),
         }
-        assert_eq!(status_of(&plan(&shared, Some(SIDEBAR), true, "GET", "app://ui/missing.html", &json_headers(), no_body)), Some(404));
+        assert_eq!(
+            status_of(&plan(
+                &shared,
+                Some(SIDEBAR),
+                true,
+                "GET",
+                "app://ui/missing.html",
+                &json_headers(),
+                no_body
+            )),
+            Some(404)
+        );
     }
 
     #[test]
     fn harness_assets_get_no_csp() {
         // The placeholder pages keep their inline scripts; they are never served as the real UI.
-        let (shared, _rt) = shared_with(Arc::new(EmbeddedAssets::new(&[("sidebar.html", "text/html", b"<p>")])));
+        let (shared, _rt) = shared_with(Arc::new(EmbeddedAssets::new(&[(
+            "sidebar.html",
+            "text/html",
+            b"<p>",
+        )])));
         bound(&shared);
-        match plan(&shared, Some(SIDEBAR), true, "GET", "app://ui/sidebar.html", &json_headers(), || PostBody::Bytes(vec![])) {
+        match plan(
+            &shared,
+            Some(SIDEBAR),
+            true,
+            "GET",
+            "app://ui/sidebar.html",
+            &json_headers(),
+            || PostBody::Bytes(vec![]),
+        ) {
             Plan::Static { csp, .. } => assert!(!csp),
             Plan::Rpc { .. } => panic!("an asset is not an RPC"),
         }

@@ -48,7 +48,11 @@ mod tests {
     fn load_start_then_address_change_share_one_generation() {
         let mut nav = NavTracker::default();
         assert_eq!(nav.load_start(), 1);
-        assert_eq!(nav.address_change(), 1, "the address change belongs to the load");
+        assert_eq!(
+            nav.address_change(),
+            1,
+            "the address change belongs to the load"
+        );
         assert_eq!(nav.current(), 1);
         assert_eq!(nav.load_start(), 2, "the next load starts a new generation");
         assert_eq!(nav.address_change(), 2);

@@ -7,8 +7,8 @@
 //! of the queue, and everything behind it waits too.
 
 use crate::client::EngineClient;
-use crate::log::elog;
 use crate::engine::{Shared, post_after, post_to_ui};
+use crate::log::elog;
 use crate::nav::NavTracker;
 use crate::paths::private_dir;
 use crate::window::{ViewDelegateImpl, WindowDelegateImpl};
@@ -101,14 +101,21 @@ pub(crate) fn execute(command: EngineCommand) {
         elog!("dropped command reason=quitting");
         return;
     }
-    with(|s| s.queue.push_back(Queued { command, attempts: 0 }));
+    with(|s| {
+        s.queue.push_back(Queued {
+            command,
+            attempts: 0,
+        })
+    });
     pump();
 }
 
 /// Runs queued commands from the head while they are ready.
 fn pump() {
     loop {
-        let Some(item) = with(|s| s.queue.front().cloned()) else { return };
+        let Some(item) = with(|s| s.queue.front().cloned()) else {
+            return;
+        };
         if !is_ready(&item.command) {
             schedule_pump();
             return;
@@ -159,19 +166,23 @@ fn is_ready(command: &EngineCommand) -> bool {
 fn run(command: EngineCommand, attempts: u32) -> Option<Queued> {
     match command {
         EngineCommand::CreateWindow { window, spec } => create_window(window, &spec),
-        EngineCommand::CreateView { view, window, spec } => match create_view(view, window, &spec) {
-            Outcome::Created => {}
-            Outcome::Retry if attempts + 1 < CREATE_ATTEMPTS => {
-                return Some(Queued {
-                    command: EngineCommand::CreateView { view, window, spec },
-                    attempts: attempts + 1,
-                });
+        EngineCommand::CreateView { view, window, spec } => {
+            match create_view(view, window, &spec) {
+                Outcome::Created => {}
+                Outcome::Retry if attempts + 1 < CREATE_ATTEMPTS => {
+                    return Some(Queued {
+                        command: EngineCommand::CreateView { view, window, spec },
+                        attempts: attempts + 1,
+                    });
+                }
+                Outcome::Retry => fail_create(view, "profile not ready"),
+                Outcome::Failed(reason) => fail_create(view, reason),
             }
-            Outcome::Retry => fail_create(view, "profile not ready"),
-            Outcome::Failed(reason) => fail_create(view, reason),
-        },
+        }
         EngineCommand::Show { view } => show(view),
-        EngineCommand::Close { view } => with_browser(view, |browser| close_browser(browser, false)),
+        EngineCommand::Close { view } => {
+            with_browser(view, |browser| close_browser(browser, false))
+        }
         EngineCommand::Load { view, url } => with_browser(view, |browser| {
             if let Some(frame) = browser.main_frame() {
                 frame.load_url(Some(&CefString::from(url.as_str())));
@@ -231,7 +242,8 @@ fn create_window(id: WindowId, spec: &WindowSpec) {
         elog!("error create_window window={id} reason=box-layout");
         return;
     };
-    let mut delegate = WindowDelegateImpl::new(id, root.clone(), spec.width as i32, spec.height as i32);
+    let mut delegate =
+        WindowDelegateImpl::new(id, root.clone(), spec.width as i32, spec.height as i32);
     let window = window_create_top_level(Some(&mut delegate));
     let created = window.is_some();
     with(|s| {
@@ -246,7 +258,11 @@ fn create_window(id: WindowId, spec: &WindowSpec) {
             },
         )
     });
-    elog!("window created window={id} size={}x{} ok={created}", spec.width, spec.height);
+    elog!(
+        "window created window={id} size={}x{} ok={created}",
+        spec.width,
+        spec.height
+    );
 }
 
 /// Creates a view. `Retry` means the profile is not ready; anything else is final.
@@ -334,7 +350,10 @@ fn create_view(view: ViewId, window: WindowId, spec: &ViewSpec) -> Outcome {
             layout.set_flex_for_view(Some(&mut view_handle), 1);
         }
     }
-    elog!("view created view={view} window={window} kind={:?}", spec.kind);
+    elog!(
+        "view created view={view} window={window} kind={:?}",
+        spec.kind
+    );
     Outcome::Created
 }
 
@@ -347,7 +366,10 @@ fn request_context(profile: ProfileId) -> Result<RequestContext, &'static str> {
     let shared = shared().ok_or("not installed")?;
     let root = shared.data_dir.join("cef");
     let cache = root.join(profile.to_string());
-    if private_dir(&root).and_then(|()| private_dir(&cache)).is_err() {
+    if private_dir(&root)
+        .and_then(|()| private_dir(&cache))
+        .is_err()
+    {
         elog!("error profile-dir profile={profile}");
         return Err("profile directory");
     }
@@ -490,7 +512,9 @@ pub(crate) fn browser_closed(view: ViewId) {
         };
         Some((entry, root, empty))
     });
-    let Some((entry, root, empty)) = removed else { return };
+    let Some((entry, root, empty)) = removed else {
+        return;
+    };
     if let Some(browser) = &entry.browser {
         shared.registry.unbind_browser(browser.identifier());
     }
@@ -586,7 +610,9 @@ fn cancel_pending(window: WindowId, shared: &Shared) {
         let failed: Vec<ViewId> = queued
             .iter()
             .filter_map(|item| match &item.command {
-                EngineCommand::CreateView { view, window: w, .. } if *w == window => Some(*view),
+                EngineCommand::CreateView {
+                    view, window: w, ..
+                } if *w == window => Some(*view),
                 _ => None,
             })
             .collect();
@@ -633,7 +659,12 @@ pub(crate) fn window_destroyed(window: WindowId) {
 
 /// Closes every window, or ends the loop if there are none. UI thread.
 pub(crate) fn close_all_windows() {
-    let windows: Vec<Window> = with(|s| s.windows.values().filter_map(|w| w.window.clone()).collect());
+    let windows: Vec<Window> = with(|s| {
+        s.windows
+            .values()
+            .filter_map(|w| w.window.clone())
+            .collect()
+    });
     if windows.is_empty() {
         quit_message_loop();
         return;

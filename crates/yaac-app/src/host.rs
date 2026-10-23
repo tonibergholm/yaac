@@ -50,7 +50,9 @@ pub fn ui_assets() -> Arc<dyn UiAssets> {
     {
         let dir = std::env::var_os("YAAC_UI_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../ui/dist")));
+            .unwrap_or_else(|| {
+                PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../ui/dist"))
+            });
         if dir.join("sidebar.html").is_file() {
             println!("HOST ui-assets source=dir");
             Arc::new(yaac_cef::DirAssets::new(dir))
@@ -110,7 +112,10 @@ impl yaac_cef::RpcHandler for CoreRpc {
                     ErrorCode::Forbidden,
                     "only the main frame may call the core",
                 ),
-                Some(core) => core.request(Principal::Ui { view: caller.view }, request).await,
+                Some(core) => {
+                    core.request(Principal::Ui { view: caller.view }, request)
+                        .await
+                }
             }
         })
     }
@@ -180,7 +185,11 @@ fn start_core(
             return;
         }
         blocking.spawn(forward_engine_events(events, sender));
-        blocking.spawn(push_core_events(core.subscribe(), engine.clone(), sidebar.clone()));
+        blocking.spawn(push_core_events(
+            core.subscribe(),
+            engine.clone(),
+            sidebar.clone(),
+        ));
         #[cfg(yaac_dev)]
         match mode {
             Mode::PersistWrite => {
@@ -210,7 +219,10 @@ pub fn shutdown(engine: Arc<CefEngine>, core_cell: Arc<OnceLock<CoreHandle>>, ru
 
 /// Engine callbacks reach the core here. Events produced before this task starts wait in the
 /// channel, so none are lost between `spawn` returning and the forwarder running.
-async fn forward_engine_events(mut events: UnboundedReceiver<EngineEvent>, sender: EngineEventSender) {
+async fn forward_engine_events(
+    mut events: UnboundedReceiver<EngineEvent>,
+    sender: EngineEventSender,
+) {
     while let Some(event) = events.recv().await {
         sender.send(event);
     }

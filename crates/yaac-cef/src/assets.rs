@@ -136,7 +136,11 @@ pub(crate) fn sanitize(path: &str) -> Option<std::path::PathBuf> {
     Some(out)
 }
 
-#[cfg(any(debug_assertions, feature = "dev-tools", all(feature = "embed-ui", not(debug_assertions))))]
+#[cfg(any(
+    debug_assertions,
+    feature = "dev-tools",
+    all(feature = "embed-ui", not(debug_assertions))
+))]
 fn mime_for(path: &Path) -> &'static str {
     match path
         .extension()
@@ -165,8 +169,14 @@ mod tests {
 
     #[test]
     fn sanitize_accepts_plain_relative_paths() {
-        assert_eq!(sanitize("sidebar.html"), Some(PathBuf::from("sidebar.html")));
-        assert_eq!(sanitize("/assets/app.js"), Some(PathBuf::from("assets/app.js")));
+        assert_eq!(
+            sanitize("sidebar.html"),
+            Some(PathBuf::from("sidebar.html"))
+        );
+        assert_eq!(
+            sanitize("/assets/app.js"),
+            Some(PathBuf::from("assets/app.js"))
+        );
         assert_eq!(sanitize(""), Some(PathBuf::from("index.html")));
         assert_eq!(sanitize("/"), Some(PathBuf::from("index.html")));
     }

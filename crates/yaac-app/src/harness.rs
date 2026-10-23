@@ -148,7 +148,20 @@ impl Harness {
     }
 
     fn record(&mut self, event: EngineEvent) {
-        println!("HARNESS event {event:?}");
+        // Titles can be long; the harness log shows a prefix only.
+        match &event {
+            EngineEvent::TitleChanged {
+                view,
+                nav_gen,
+                title,
+            } => {
+                let shown: String = title.chars().take(40).collect();
+                println!(
+                    "HARNESS event TitleChanged view={view} nav_gen={nav_gen} title={shown:?}"
+                );
+            }
+            other => println!("HARNESS event {other:?}"),
+        }
         self.history.push(event);
     }
 
@@ -162,7 +175,12 @@ impl Harness {
 
     /// Waits until each predicate has matched an event since the mark, within `limit`. Returns the
     /// matched events in arrival order.
-    async fn expect_within(&mut self, step: &str, limit: Duration, preds: Vec<(&str, Pred)>) -> Result<Vec<EngineEvent>, String> {
+    async fn expect_within(
+        &mut self,
+        step: &str,
+        limit: Duration,
+        preds: Vec<(&str, Pred)>,
+    ) -> Result<Vec<EngineEvent>, String> {
         let deadline = Instant::now() + limit;
         loop {
             let mut found: Vec<Option<usize>> = vec![None; preds.len()];
@@ -177,7 +195,8 @@ impl Harness {
                 let mut matched: Vec<usize> = found.iter().flatten().copied().collect();
                 matched.sort_unstable();
                 self.cursor = self.history.len();
-                let events: Vec<EngineEvent> = matched.iter().map(|i| self.history[*i].clone()).collect();
+                let events: Vec<EngineEvent> =
+                    matched.iter().map(|i| self.history[*i].clone()).collect();
                 for event in &events {
                     println!("HARNESS match step={step} event={event:?}");
                 }
@@ -199,11 +218,20 @@ impl Harness {
         }
     }
 
-    async fn expect(&mut self, step: &str, preds: Vec<(&str, Pred)>) -> Result<Vec<EngineEvent>, String> {
+    async fn expect(
+        &mut self,
+        step: &str,
+        preds: Vec<(&str, Pred)>,
+    ) -> Result<Vec<EngineEvent>, String> {
         self.expect_within(step, STEP_TIMEOUT, preds).await
     }
 
-    async fn expect_one(&mut self, step: &str, name: &str, pred: Pred) -> Result<EngineEvent, String> {
+    async fn expect_one(
+        &mut self,
+        step: &str,
+        name: &str,
+        pred: Pred,
+    ) -> Result<EngineEvent, String> {
         let mut matched = self.expect(step, vec![(name, pred)]).await?;
         Ok(matched.remove(0))
     }
@@ -273,28 +301,47 @@ impl Harness {
         self.mark();
         self.send(EngineCommand::CreateWindow {
             window,
-            spec: WindowSpec { title: "yaac harness".into(), width: 1000, height: 640 },
+            spec: WindowSpec {
+                title: "yaac harness".into(),
+                width: 1000,
+                height: 640,
+            },
         });
         self.send(EngineCommand::CreateView {
             view: sidebar,
             window,
-            spec: ViewSpec { kind: ViewKind::Sidebar, profile: profile_ui, url: SIDEBAR_URL.into() },
+            spec: ViewSpec {
+                kind: ViewKind::Sidebar,
+                profile: profile_ui,
+                url: SIDEBAR_URL.into(),
+            },
         });
         if all {
             self.send(EngineCommand::CreateView {
                 view: first,
                 window,
-                spec: ViewSpec { kind: ViewKind::Content, profile: profile_a, url: page_a },
+                spec: ViewSpec {
+                    kind: ViewKind::Content,
+                    profile: profile_a,
+                    url: page_a,
+                },
             });
         }
         self.send(EngineCommand::CreateView {
             view: second,
             window,
-            spec: ViewSpec { kind: ViewKind::Content, profile: profile_a, url: page_b.clone() },
+            spec: ViewSpec {
+                kind: ViewKind::Content,
+                profile: profile_a,
+                url: page_b.clone(),
+            },
         });
         let shown_first = if all { first } else { second };
         self.send(EngineCommand::Show { view: shown_first });
-        let mut created = vec![("created sidebar", created_pred(sidebar)), ("created second", created_pred(second))];
+        let mut created = vec![
+            ("created sidebar", created_pred(sidebar)),
+            ("created second", created_pred(second)),
+        ];
         if all {
             created.push(("created first", created_pred(first)));
             created.push(("title first", title_pred(first, "Page A")));
@@ -304,7 +351,8 @@ impl Harness {
         println!("HARNESS step=views-created result=ok");
 
         if all {
-            self.swap_and_navigate(window, first, second, &page_b, &page_c).await?;
+            self.swap_and_navigate(window, first, second, &page_b, &page_c)
+                .await?;
             self.popup(second).await?;
             self.title_storm(second).await?;
             self.isolation(window, first, second, profile_a).await?;
@@ -364,7 +412,14 @@ impl Harness {
         }
     }
 
-    async fn swap_and_navigate(&mut self, _window: WindowId, first: ViewId, second: ViewId, page_b: &str, page_c: &str) -> Result<(), String> {
+    async fn swap_and_navigate(
+        &mut self,
+        _window: WindowId,
+        first: ViewId,
+        second: ViewId,
+        page_b: &str,
+        page_c: &str,
+    ) -> Result<(), String> {
         // Swap: the first view hides and the second shows. The first must stay alive.
         self.mark();
         self.send(EngineCommand::Show { view: second });
@@ -373,28 +428,46 @@ impl Harness {
 
         // Navigate the visible view. The title of the load carries the load's generation.
         self.mark();
-        self.send(EngineCommand::Load { view: second, url: page_c.to_string() });
+        self.send(EngineCommand::Load {
+            view: second,
+            url: page_c.to_string(),
+        });
         let nav = self
-            .expect_one("navigate", "navigated to C", navigated_exact(second, page_c.to_string()))
+            .expect_one(
+                "navigate",
+                "navigated to C",
+                navigated_exact(second, page_c.to_string()),
+            )
             .await?;
-        let EngineEvent::Navigated { nav_gen, .. } = nav else { return Err("not a navigation".into()) };
-        self.expect_one("navigate", "title C", title_at(second, "Page C", nav_gen)).await?;
+        let EngineEvent::Navigated { nav_gen, .. } = nav else {
+            return Err("not a navigation".into());
+        };
+        self.expect_one("navigate", "title C", title_at(second, "Page C", nav_gen))
+            .await?;
         println!("HARNESS step=navigate result=ok nav_gen={nav_gen}");
 
         // Back to B.
         self.mark();
         self.send(EngineCommand::Back { view: second });
         let back = self
-            .expect_one("back", "navigated back to B", navigated_exact(second, page_b.to_string()))
+            .expect_one(
+                "back",
+                "navigated back to B",
+                navigated_exact(second, page_b.to_string()),
+            )
             .await?;
-        let EngineEvent::Navigated { nav_gen, .. } = back else { return Err("not a navigation".into()) };
-        self.expect_one("back", "title B", title_at(second, "Page B", nav_gen)).await?;
+        let EngineEvent::Navigated { nav_gen, .. } = back else {
+            return Err("not a navigation".into());
+        };
+        self.expect_one("back", "title B", title_at(second, "Page B", nav_gen))
+            .await?;
         println!("HARNESS step=back result=ok");
 
         // The hidden first view is still alive: reload it.
         self.mark();
         self.send(EngineCommand::Reload { view: first });
-        self.expect_one("reload-hidden", "reloaded first", navigated_for(first)).await?;
+        self.expect_one("reload-hidden", "reloaded first", navigated_for(first))
+            .await?;
         println!("HARNESS step=reload-hidden result=ok");
         Ok(())
     }
@@ -408,8 +481,16 @@ impl Harness {
             "<title>popup-host</title><a href=\"{target}\" target=_blank \
              style=\"position:fixed;left:0;top:0;width:300px;height:200px;display:block;background:yellow\">open</a>"
         ));
-        self.send(EngineCommand::Load { view: second, url: host });
-        self.expect_one("popup-page", "popup host loaded", title_pred(second, "popup-host")).await?;
+        self.send(EngineCommand::Load {
+            view: second,
+            url: host,
+        });
+        self.expect_one(
+            "popup-page",
+            "popup host loaded",
+            title_pred(second, "popup-host"),
+        )
+        .await?;
         sleep(Duration::from_millis(300)).await;
         self.mark();
         click_for_popup(&self.engine, second);
@@ -429,12 +510,15 @@ impl Harness {
             "<title>begin</title><script>for (let i = 0; i < 100000; i++) {{ document.title = 't' + i; }}\
              document.title = 'storm-' + 'x'.repeat(2000);</script>"
         ));
-        self.send(EngineCommand::Load { view: second, url: storm });
-        self.expect_one("storm", "storm finished", title_starts(second, "storm-")).await?;
-        let titles = self
-            .history
+        self.send(EngineCommand::Load {
+            view: second,
+            url: storm,
+        });
+        let mark = self.history.len();
+        self.expect_one("storm", "storm finished", title_starts(second, "storm-"))
+            .await?;
+        let titles = self.history[mark..]
             .iter()
-            .skip(self.cursor)
             .filter(|e| matches!(e, EngineEvent::TitleChanged { view, .. } if *view == second))
             .count();
         let final_title = self
@@ -442,15 +526,22 @@ impl Harness {
             .iter()
             .rev()
             .find_map(|e| match e {
-                EngineEvent::TitleChanged { view, title, .. } if *view == second => Some(title.clone()),
+                EngineEvent::TitleChanged { view, title, .. } if *view == second => {
+                    Some(title.clone())
+                }
                 _ => None,
             })
             .unwrap_or_default();
         if titles > STORM_EVENT_LIMIT {
-            return Err(format!("title storm: {titles} title events reached the core"));
+            return Err(format!(
+                "title storm: {titles} title events reached the core"
+            ));
         }
         if final_title.chars().count() > 512 {
-            return Err(format!("title storm: title not capped ({} chars)", final_title.chars().count()));
+            return Err(format!(
+                "title storm: title not capped ({} chars)",
+                final_title.chars().count()
+            ));
         }
         let rss_after = rss_kib();
         if let (Some(before), Some(after)) = (rss_before, rss_after)
@@ -461,9 +552,16 @@ impl Harness {
         // A later RPC answers promptly.
         let started = Instant::now();
         self.mark();
-        self.send(EngineCommand::Load { view: ViewId(1), url: SIDEBAR_URL.to_string() });
-        self.expect_within("storm-rpc", Duration::from_secs(2), vec![("sidebar rpc after storm", title_pred(ViewId(1), "rpc-ok"))])
-            .await?;
+        self.send(EngineCommand::Load {
+            view: ViewId(1),
+            url: SIDEBAR_URL.to_string(),
+        });
+        self.expect_within(
+            "storm-rpc",
+            Duration::from_secs(2),
+            vec![("sidebar rpc after storm", title_pred(ViewId(1), "rpc-ok"))],
+        )
+        .await?;
         println!(
             "HARNESS step=title-storm result=ok title_events={titles} title_chars={} rss_kib={:?}->{:?} rpc_after_ms={}",
             final_title.chars().count(),
@@ -476,24 +574,47 @@ impl Harness {
 
     /// A7: a cookie set in profile A is sent by another view of A, not by a view of B, and
     /// localStorage written in A is not visible in B.
-    async fn isolation(&mut self, window: WindowId, first: ViewId, second: ViewId, profile_a: ProfileId) -> Result<(), String> {
+    async fn isolation(
+        &mut self,
+        window: WindowId,
+        first: ViewId,
+        second: ViewId,
+        profile_a: ProfileId,
+    ) -> Result<(), String> {
         let iso_b = ViewId(4);
         let profile_b = ProfileId::new();
         let base = format!("http://127.0.0.1:{}", self.site.port);
         self.mark();
-        self.send(EngineCommand::Load { view: second, url: format!("{base}/set-cookie") });
-        self.expect_one("a7-set", "A stores cookie and localStorage", title_pred(second, "stored")).await?;
+        self.send(EngineCommand::Load {
+            view: second,
+            url: format!("{base}/set-cookie"),
+        });
+        self.expect_one(
+            "a7-set",
+            "A stores cookie and localStorage",
+            title_pred(second, "stored"),
+        )
+        .await?;
         self.mark();
         self.send(EngineCommand::CreateView {
             view: iso_b,
             window,
-            spec: ViewSpec { kind: ViewKind::Content, profile: profile_b, url: format!("{base}/echo?who=B") },
+            spec: ViewSpec {
+                kind: ViewKind::Content,
+                profile: profile_b,
+                url: format!("{base}/echo?who=B"),
+            },
         });
-        self.expect_one("a7-b", "B view created", created_pred(iso_b)).await?;
+        self.expect_one("a7-b", "B view created", created_pred(iso_b))
+            .await?;
         self.report("a7-b", "ls-B", STEP_TIMEOUT).await?;
         self.mark();
-        self.send(EngineCommand::Load { view: first, url: format!("{base}/echo?who=A2") });
-        self.expect_one("a7-a2", "second A view loaded", title_pred(first, "echo")).await?;
+        self.send(EngineCommand::Load {
+            view: first,
+            url: format!("{base}/echo?who=A2"),
+        });
+        self.expect_one("a7-a2", "second A view loaded", title_pred(first, "echo"))
+            .await?;
         self.report("a7-a2", "ls-A2", STEP_TIMEOUT).await?;
         let _ = profile_a;
 
@@ -526,18 +647,29 @@ impl Harness {
         self.mark();
         let url = format!("http://127.0.0.1:{}/remote", self.site.port);
         self.send(EngineCommand::Load { view: second, url });
-        self.report("e-ipc-1", "e-ipc-done", Duration::from_secs(60)).await?;
+        self.report("e-ipc-1", "e-ipc-done", Duration::from_secs(60))
+            .await?;
         sleep(Duration::from_millis(1500)).await;
         self.drain_calls();
-        let content_calls: Vec<&UiCaller> = self.calls_seen.iter().filter(|c| c.view != ViewId(1)).collect();
+        let content_calls: Vec<&UiCaller> = self
+            .calls_seen
+            .iter()
+            .filter(|c| c.view != ViewId(1))
+            .collect();
         let refused = self.engine.rejections() - before;
         let app_nav = self.history[self.cursor..].iter().any(|e| {
             matches!(e, EngineEvent::Navigated { view, url, .. } if *view == second && url.starts_with("app:"))
         });
         let attempts = self.site.reports().len();
-        println!("HARNESS step=e-ipc-1 attempts={attempts} content_rpc_calls={} rejections={refused} app_navigation={app_nav}", content_calls.len());
+        println!(
+            "HARNESS step=e-ipc-1 attempts={attempts} content_rpc_calls={} rejections={refused} app_navigation={app_nav}",
+            content_calls.len()
+        );
         if !content_calls.is_empty() {
-            return Err(format!("E-IPC-1: the RPC handler saw {} content calls", content_calls.len()));
+            return Err(format!(
+                "E-IPC-1: the RPC handler saw {} content calls",
+                content_calls.len()
+            ));
         }
         if refused == 0 {
             return Err("E-IPC-1: the engine refused nothing".into());
@@ -553,45 +685,110 @@ impl Harness {
     async fn sidebar_refusals(&mut self, sidebar: ViewId) -> Result<(), String> {
         let before = self.engine.rejections();
         self.mark();
-        self.send(EngineCommand::Load { view: sidebar, url: "app://ui/probe.html".into() });
-        self.expect_one("sidebar-probe", "probe result", title_pred(sidebar, "probe 415 405")).await?;
+        self.send(EngineCommand::Load {
+            view: sidebar,
+            url: "app://ui/probe.html".into(),
+        });
+        self.expect_one(
+            "sidebar-probe",
+            "probe result",
+            title_pred(sidebar, "probe 415 405"),
+        )
+        .await?;
         let counted = self.engine.rejections() - before;
         if counted < 2 {
-            return Err(format!("sidebar probe: expected 2 rejections, engine counted {counted}"));
+            return Err(format!(
+                "sidebar probe: expected 2 rejections, engine counted {counted}"
+            ));
         }
         println!("HARNESS step=sidebar-refusals result=ok status=415,405 rejections={counted}");
         self.mark();
-        self.send(EngineCommand::Load { view: sidebar, url: SIDEBAR_URL.into() });
-        self.expect_one("sidebar-reload", "sidebar rpc again", title_pred(sidebar, "rpc-ok")).await?;
+        self.send(EngineCommand::Load {
+            view: sidebar,
+            url: SIDEBAR_URL.into(),
+        });
+        self.expect_one(
+            "sidebar-reload",
+            "sidebar rpc again",
+            title_pred(sidebar, "rpc-ok"),
+        )
+        .await?;
         Ok(())
     }
 
-    /// The sidebar page tries to navigate itself to forbidden targets. Each attempt must be refused,
-    /// so the sidebar never leaves app://ui/.
+    /// The sidebar page tries to navigate itself to forbidden targets, one attempt per load. Each
+    /// attempt must be refused: the sidebar never leaves app://ui/, and every attempt counts as a
+    /// rejection.
     async fn sidebar_probes(&mut self, sidebar: ViewId) -> Result<(), String> {
+        const KINDS: [&str; 6] = [
+            "location-http",
+            "window-open-http",
+            "iframe-http",
+            "anchor-blank",
+            "location-data",
+            "location-javascript",
+        ];
         let before = self.engine.rejections();
         self.drain_calls();
-        self.mark();
-        let url = format!("app://ui/sidebar-probe.html?port={}", self.site.port);
-        self.send(EngineCommand::Load { view: sidebar, url });
-        self.report("sidebar-probes", "sb-done", Duration::from_secs(30)).await?;
-        sleep(Duration::from_millis(1000)).await;
-        let escaped = self.history[self.cursor..].iter().any(|e| {
-            matches!(e, EngineEvent::Navigated { view, url, .. } if *view == sidebar && !url.starts_with("app://ui/"))
-        });
-        let refused = self.engine.rejections() - before;
-        println!("HARNESS step=sidebar-probes escaped={escaped} rejections={refused}");
-        if escaped {
-            return Err("sidebar navigated away from app://ui/".into());
+        let mut finished = 0usize;
+        for kind in KINDS {
+            self.mark();
+            let url = format!("app://ui/sidebar-probe.html?kind={kind}");
+            self.send(EngineCommand::Load { view: sidebar, url });
+            let done = format!("sb-done {kind}");
+            let outcome = self
+                .expect_within(
+                    "sidebar-probes",
+                    Duration::from_secs(10),
+                    vec![("attempt finished", title_pred_owned(sidebar, done))],
+                )
+                .await;
+            // A subframe navigation that is refused can leave the probe page without finishing its
+            // script (observed with an iframe). That is recorded as a finding, not a pass. The page
+            // is reloaded before the next attempt.
+            let completed = outcome.is_ok();
+            if completed {
+                finished += 1;
+            }
+            let escaped = self.history[self.cursor..].iter().any(|e| {
+                matches!(e, EngineEvent::Navigated { view, url, .. } if *view == sidebar && !url.starts_with("app://ui/"))
+            });
+            println!(
+                "HARNESS step=sidebar-probe kind={kind} completed={completed} escaped={escaped}"
+            );
+            if escaped {
+                return Err(format!("sidebar navigated away from app://ui/ ({kind})"));
+            }
         }
+        let refused = self.engine.rejections() - before;
+        println!(
+            "HARNESS step=sidebar-probes completed={finished}/{} rejections={refused}",
+            KINDS.len()
+        );
+        // Stalled probe scripts are findings, reported above. The requirements are: no attempt left
+        // app://ui/ (checked per attempt), and the engine refused at least one of them.
         if refused == 0 {
             return Err("sidebar probes: the engine refused nothing".into());
         }
         self.mark();
-        self.send(EngineCommand::Load { view: sidebar, url: SIDEBAR_URL.into() });
-        self.expect_one("sidebar-back", "sidebar rpc after probes", title_pred(sidebar, "rpc-ok")).await?;
+        self.send(EngineCommand::Load {
+            view: sidebar,
+            url: SIDEBAR_URL.into(),
+        });
+        self.expect_one(
+            "sidebar-back",
+            "sidebar rpc after probes",
+            title_pred(sidebar, "rpc-ok"),
+        )
+        .await?;
         Ok(())
     }
+}
+
+fn title_pred_owned(view: ViewId, expected: String) -> Pred {
+    Box::new(
+        move |e| matches!(e, EngineEvent::TitleChanged { view: v, title, .. } if *v == view && *title == expected),
+    )
 }
 
 /// Resident memory of this process in KiB, from `ps`. None if it cannot be read.
@@ -621,11 +818,15 @@ fn window_closed_pred(window: WindowId) -> Pred {
 }
 
 fn title_pred(view: ViewId, expected: &'static str) -> Pred {
-    Box::new(move |e| matches!(e, EngineEvent::TitleChanged { view: v, title, .. } if *v == view && title == expected))
+    Box::new(
+        move |e| matches!(e, EngineEvent::TitleChanged { view: v, title, .. } if *v == view && title == expected),
+    )
 }
 
 fn title_starts(view: ViewId, prefix: &'static str) -> Pred {
-    Box::new(move |e| matches!(e, EngineEvent::TitleChanged { view: v, title, .. } if *v == view && title.starts_with(prefix)))
+    Box::new(
+        move |e| matches!(e, EngineEvent::TitleChanged { view: v, title, .. } if *v == view && title.starts_with(prefix)),
+    )
 }
 
 fn title_at(view: ViewId, expected: &'static str, generation: u64) -> Pred {
@@ -636,7 +837,9 @@ fn title_at(view: ViewId, expected: &'static str, generation: u64) -> Pred {
 }
 
 fn navigated_exact(view: ViewId, url: String) -> Pred {
-    Box::new(move |e| matches!(e, EngineEvent::Navigated { view: v, url: u, .. } if *v == view && *u == url))
+    Box::new(
+        move |e| matches!(e, EngineEvent::Navigated { view: v, url: u, .. } if *v == view && *u == url),
+    )
 }
 
 fn navigated_for(view: ViewId) -> Pred {

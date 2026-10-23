@@ -2,15 +2,15 @@
 //! harness and the persistence checks exist only in debug builds and `dev-tools` builds (see
 //! README.md).
 
-mod host;
 #[cfg(yaac_dev)]
 mod harness;
+mod host;
 #[cfg(yaac_dev)]
 mod selftest;
 #[cfg(yaac_dev)]
 mod site;
 
-use host::{CoreRpc, CefMainThread};
+use host::{CefMainThread, CoreRpc};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, OnceLock};
@@ -128,7 +128,8 @@ fn main() -> ExitCode {
     };
     // The data directory is validated: a symlink or a directory of another user is refused, and a
     // looser mode is tightened. The logs and the runtime directory always exist.
-    if let Err(error) = ensure_private_dir(&data_dir).and_then(|()| ensure_private_dir(&paths.logs)) {
+    if let Err(error) = ensure_private_dir(&data_dir).and_then(|()| ensure_private_dir(&paths.logs))
+    {
         eprintln!("yaac-app: {}: {error}", data_dir.display());
         return ExitCode::from(1);
     }
