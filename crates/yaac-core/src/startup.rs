@@ -62,7 +62,7 @@ fn bootstrap(tx: &mut Tx) -> Result<(), ApiError> {
         id: profile,
         kind: ProfileKind::Default,
         name: "Default".to_owned(),
-        cache_dir: format!("profiles/{profile}"),
+        cache_dir: profile.to_string(),
         created_at: now_millis(),
     });
     tx.put_container(Container {

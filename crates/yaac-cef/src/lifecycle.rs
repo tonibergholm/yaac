@@ -38,8 +38,6 @@ wrap_app! {
             }
             let Some(command_line) = command_line else { return };
             for switch in [
-                // Dev-only until the SecretStore lands: keeps the Keychain prompt out of the way.
-                "use-mock-keychain",
                 "disable-extensions",
                 "disable-background-networking",
                 "disable-component-update",
@@ -51,6 +49,14 @@ wrap_app! {
                 "no-pings",
             ] {
                 command_line.append_switch(Some(&CefString::from(switch)));
+            }
+            // The mock keychain stores Chromium's profile-encryption key as a fixed constant, so
+            // cookies and saved logins are effectively unencrypted at rest. It keeps the Keychain
+            // prompt away from ad-hoc signed development builds, so it is for debug builds and an
+            // explicit opt-in only. Release builds use the real Keychain.
+            if cfg!(debug_assertions) || std::env::var_os("YAAC_MOCK_KEYCHAIN").is_some() {
+                eprintln!("yaac: WARNING mock keychain in use; profile data is not protected");
+                command_line.append_switch(Some(&CefString::from("use-mock-keychain")));
             }
             command_line.append_switch_with_value(
                 Some(&CefString::from("disable-features")),

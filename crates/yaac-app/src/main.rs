@@ -4,10 +4,11 @@
 
 mod harness;
 mod host;
+mod selftest;
 
-use host::{Mode, NoCore, StubRpc};
+use host::{CoreRpc, Mode, StubRpc};
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc::unbounded_channel;
 use yaac_cef::{EngineSettings, RpcHandler};
 use yaac_platform::{MacPlatform, Platform};
@@ -27,11 +28,12 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
     }
     // Harness runs use a fresh data directory, so caches never carry over between runs.
-    let data_dir = match mode {
-        Mode::Shell => std::env::var_os("YAAC_DATA_DIR")
+    let data_dir = if mode.is_harness() {
+        std::env::temp_dir().join(format!("yaac-harness-{}", std::process::id()))
+    } else {
+        std::env::var_os("YAAC_DATA_DIR")
             .map(std::path::PathBuf::from)
-            .unwrap_or(paths.data.clone()),
-        _ => std::env::temp_dir().join(format!("yaac-harness-{}", std::process::id())),
+            .unwrap_or(paths.data.clone())
     };
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -48,10 +50,15 @@ fn main() -> ExitCode {
 
     let (events_tx, events_rx) = unbounded_channel();
     let (calls_tx, calls_rx) = unbounded_channel();
-    let rpc: Arc<dyn RpcHandler> = match mode {
-        Mode::Shell => Arc::new(NoCore),
-        Mode::EngineHarness | Mode::RpcHarness => Arc::new(StubRpc { calls: calls_tx }),
+    let core_cell = Arc::new(OnceLock::new());
+    let rpc: Arc<dyn RpcHandler> = if mode.is_harness() {
+        Arc::new(StubRpc { calls: calls_tx })
+    } else {
+        Arc::new(CoreRpc {
+            core: core_cell.clone(),
+        })
     };
+    let data_dir_for_core = data_dir.clone();
     let settings = EngineSettings {
         data_dir,
         log_file: paths.logs.join("cef.log"),
@@ -62,9 +69,17 @@ fn main() -> ExitCode {
     };
 
     let handle = runtime.handle().clone();
+    let start_cell = core_cell.clone();
+    let start_dir = data_dir_for_core;
     let code = yaac_cef::run_browser(settings, move |engine| {
-        host::start(mode, engine, handle, events_rx, calls_rx);
+        host::start(
+            mode, engine, handle, events_rx, calls_rx, start_dir, start_cell,
+        );
     });
+    // Flush the coalesced writes and join the core's threads before the process exits.
+    if let Some(core) = core_cell.get() {
+        core.shutdown();
+    }
     drop(runtime);
     ExitCode::from(code as u8)
 }

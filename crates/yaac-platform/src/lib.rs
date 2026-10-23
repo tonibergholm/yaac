@@ -26,11 +26,19 @@ impl AppPaths {
     /// Creates every directory. The runtime directory must be private: it is created 0700 and an
     /// existing directory is rejected unless it is owned by the current user with mode 0700.
     pub fn create_all(&self) -> io::Result<()> {
+        // Browsing data lives here, so every directory is private to the user.
         for dir in [&self.config, &self.data, &self.cache, &self.logs] {
-            create_dir(dir, 0o755)?;
+            create_dir(dir, 0o700)?;
         }
         create_dir(&self.runtime, 0o700)?;
-        let meta = std::fs::metadata(&self.runtime)?;
+        // `symlink_metadata`: a symlink planted at this path must not be followed.
+        let meta = std::fs::symlink_metadata(&self.runtime)?;
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            return Err(io::Error::other(format!(
+                "runtime path {} is not a plain directory",
+                self.runtime.display()
+            )));
+        }
         // SAFETY: getuid has no preconditions and cannot fail.
         let uid = unsafe { libc::getuid() };
         let mode = meta.permissions().mode() & 0o777;
