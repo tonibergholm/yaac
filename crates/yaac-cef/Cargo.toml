@@ -7,5 +7,22 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# Pinned to the cef-rs release that binds CEF 154.0.34. Do not mix with CEF 156 binaries.
+cef = "=154.5.0"
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
 yaac-model.workspace = true
+yaac-api.workspace = true
 yaac-engine.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.3"
+objc2-foundation = "0.3.2"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "NSApplication",
+    "NSEvent",
+    "NSResponder",
+    "NSWindow",
+    "NSView",
+] }

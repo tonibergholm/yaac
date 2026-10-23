@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Sidebar</title>
+<style>
+  body { margin: 0; padding: 12px; font: 13px -apple-system, system-ui, sans-serif; background: #1e2430; color: #e6e9ef; }
+  h1 { font-size: 14px; margin: 0 0 8px; }
+  #status { color: #9fb3c8; }
+</style>
+<h1>yaac harness sidebar</h1>
+<p id="status">rpc pending</p>
+<script>
+  // Placeholder for the real sidebar. One RPC on load: the harness checks the reply through the
+  // title, because the page cannot see the scheme's logs.
+  fetch('app://ui/api/v1/rpc', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ v: 1, id: 1, body: { kind: 'query', body: { type: 'snapshot' } } })
+  })
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      var ok = j.result && j.result.status === 'ok';
+      document.getElementById('status').textContent = 'rpc ' + (ok ? 'ok' : 'error');
+      document.title = ok ? 'rpc-ok' : 'rpc-error';
+    })
+    .catch(function () { document.title = 'rpc-fail'; });
+</script>
