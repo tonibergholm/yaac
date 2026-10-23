@@ -11,7 +11,9 @@ mod selftest;
 mod site;
 
 use host::{CefMainThread, CoreRpc};
-use std::path::{Path, PathBuf};
+#[cfg(yaac_dev)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc::unbounded_channel;

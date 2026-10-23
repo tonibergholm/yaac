@@ -15,7 +15,7 @@ dev-tools = []
 [dependencies]
 # Pinned to the cef-rs release that binds CEF 154.0.34. Do not mix with CEF 156 binaries.
 cef = "=154.5.0"
-rust-embed = { version = "8", optional = true }
+rust-embed = { version = "8", optional = true, features = ["interpolate-folder-path"] }
 libc = "0.2"
 serde_json.workspace = true
 thiserror.workspace = true
