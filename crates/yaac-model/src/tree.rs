@@ -405,7 +405,9 @@ mod tests {
     use super::*;
     use crate::NodeState;
     use proptest::prelude::*;
-    use proptest::sample::Index;
+    use proptest::test_runner::{Config, RngSeed, TestRunner};
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
 
     fn key(raw: &str) -> Position {
         Position::from_raw(raw.to_owned()).unwrap()
@@ -1126,92 +1128,176 @@ mod tests {
         }
     }
 
-    /// One random operation. `Index` values resolve against the tree's current contents when the
-    /// step runs, so every step targets real nodes or the top level.
+    /// The kinds of step, for counting successful operations.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum Kind {
+        Insert,
+        InsertSplit,
+        Move,
+        Remove,
+        Update,
+        Renumber,
+    }
+
+    /// One random operation. Picks are plain numbers resolved against the tree's current contents
+    /// when the step runs, so every step targets real nodes or the top level. `any_parent` lets a
+    /// step pick any node as its parent, which is usually illegal and gives failure paths
+    /// coverage. Otherwise the parent is a folder or split, so most steps are legal.
     #[derive(Debug, Clone)]
     enum Step {
         Insert {
-            parent: Index,
+            parent: usize,
+            any_parent: bool,
             tab: bool,
-            before: Index,
-            container: Index,
+            before: usize,
+            container: usize,
         },
         InsertSplit {
-            parent: Index,
-            before: Index,
-            container: Index,
+            parent: usize,
+            any_parent: bool,
+            before: usize,
+            container: usize,
             tabs: usize,
         },
         Move {
-            node: Index,
-            parent: Index,
-            before: Index,
-            container: Index,
+            node: usize,
+            parent: usize,
+            any_parent: bool,
+            before: usize,
+            container: usize,
         },
         Remove {
-            node: Index,
+            node: usize,
         },
+        Update {
+            node: usize,
+            title: u8,
+            container: usize,
+        },
+        Renumber {
+            parent: usize,
+            any_parent: bool,
+            container: usize,
+        },
+    }
+
+    impl Step {
+        fn kind(&self) -> Kind {
+            match self {
+                Step::Insert { .. } => Kind::Insert,
+                Step::InsertSplit { .. } => Kind::InsertSplit,
+                Step::Move { .. } => Kind::Move,
+                Step::Remove { .. } => Kind::Remove,
+                Step::Update { .. } => Kind::Update,
+                Step::Renumber { .. } => Kind::Renumber,
+            }
+        }
     }
 
     fn step() -> impl Strategy<Value = Step> {
         prop_oneof![
             (
-                any::<Index>(),
+                any::<usize>(),
+                prop::bool::weighted(0.2),
                 any::<bool>(),
-                any::<Index>(),
-                any::<Index>()
+                any::<usize>(),
+                any::<usize>()
             )
-                .prop_map(|(parent, tab, before, container)| Step::Insert {
-                    parent,
-                    tab,
-                    before,
-                    container
+                .prop_map(|(parent, any_parent, tab, before, container)| {
+                    Step::Insert {
+                        parent,
+                        any_parent,
+                        tab,
+                        before,
+                        container,
+                    }
                 }),
-            (any::<Index>(), any::<Index>(), any::<Index>(), 2usize..=4).prop_map(
-                |(parent, before, container, tabs)| Step::InsertSplit {
-                    parent,
-                    before,
-                    container,
-                    tabs
-                }
-            ),
             (
-                any::<Index>(),
-                any::<Index>(),
-                any::<Index>(),
-                any::<Index>()
+                any::<usize>(),
+                prop::bool::weighted(0.2),
+                any::<usize>(),
+                any::<usize>(),
+                2usize..=4
             )
-                .prop_map(|(node, parent, before, container)| Step::Move {
+                .prop_map(|(parent, any_parent, before, container, tabs)| {
+                    Step::InsertSplit {
+                        parent,
+                        any_parent,
+                        before,
+                        container,
+                        tabs,
+                    }
+                }),
+            (
+                any::<usize>(),
+                any::<usize>(),
+                prop::bool::weighted(0.2),
+                any::<usize>(),
+                any::<usize>()
+            )
+                .prop_map(|(node, parent, any_parent, before, container)| Step::Move {
                     node,
                     parent,
+                    any_parent,
                     before,
                     container
                 }),
-            any::<Index>().prop_map(|node| Step::Remove { node }),
+            any::<usize>().prop_map(|node| Step::Remove { node }),
+            (any::<usize>(), any::<u8>(), any::<usize>()).prop_map(|(node, title, container)| {
+                Step::Update {
+                    node,
+                    title,
+                    container,
+                }
+            }),
+            (any::<usize>(), prop::bool::weighted(0.2), any::<usize>()).prop_map(
+                |(parent, any_parent, container)| Step::Renumber {
+                    parent,
+                    any_parent,
+                    container
+                }
+            ),
         ]
     }
 
     /// `None` is one of `len + 1` choices, so the top level stays reachable.
-    fn pick_optional(ids: &[NodeId], index: Index) -> Option<NodeId> {
-        ids.get(index.index(ids.len() + 1)).copied()
+    fn pick_optional(ids: &[NodeId], pick: usize) -> Option<NodeId> {
+        ids.get(pick % (ids.len() + 1)).copied()
     }
 
-    fn pick_required(ids: &[NodeId], index: Index) -> Option<NodeId> {
+    fn pick_required(ids: &[NodeId], pick: usize) -> Option<NodeId> {
         if ids.is_empty() {
-            return None;
+            None
+        } else {
+            ids.get(pick % ids.len()).copied()
         }
-        ids.get(index.index(ids.len())).copied()
+    }
+
+    fn pick_container(containers: &[ContainerId], pick: usize) -> ContainerId {
+        containers[pick % containers.len()]
+    }
+
+    /// A parent for a step: a folder or split, or any node when `any_parent` is set, or the top
+    /// level.
+    fn pick_parent(tree: &TreeState, any_parent: bool, pick: usize) -> Option<NodeId> {
+        let candidates: Vec<NodeId> = tree
+            .nodes
+            .values()
+            .filter(|node| any_parent || matches!(node.kind, NodeKind::Folder | NodeKind::Split))
+            .map(|node| node.id)
+            .collect();
+        pick_optional(&candidates, pick)
     }
 
     fn container_for(
         tree: &TreeState,
         containers: &[ContainerId],
         parent: Option<NodeId>,
-        pick: Index,
+        pick: usize,
     ) -> ContainerId {
         match parent.and_then(|id| tree.get(id)) {
             Some(node) => node.container_id,
-            None => containers[pick.index(containers.len())],
+            None => pick_container(containers, pick),
         }
     }
 
@@ -1286,9 +1372,13 @@ mod tests {
         Ok(())
     }
 
+    fn containers3() -> Vec<ContainerId> {
+        (0..3).map(|_| ContainerId::new()).collect()
+    }
+
     /// A tree with a folder, a two-tab split, a top-level tab and a second container's folder.
     fn seeded() -> (Vec<ContainerId>, TreeState) {
-        let containers: Vec<ContainerId> = (0..3).map(|_| ContainerId::new()).collect();
+        let containers = containers3();
         let (c0, c1) = (containers[0], containers[1]);
         let f0 = folder(c0, None, "V");
         let (split_node, tabs) = split_with_tabs(c0, Some(f0.id), 2);
@@ -1300,20 +1390,23 @@ mod tests {
         (containers, tree_of(all))
     }
 
+    /// Applies one step. Returns the kind of operation when it succeeded, `None` when it was
+    /// rejected or had nothing to act on. Every outcome is checked against the invariants.
     fn apply(
         tree: &mut TreeState,
         containers: &[ContainerId],
         step: &Step,
-    ) -> Result<(), TestCaseError> {
+    ) -> Result<Option<Kind>, TestCaseError> {
         let ids: Vec<NodeId> = tree.nodes.keys().copied().collect();
         match step {
             Step::Insert {
                 parent,
+                any_parent,
                 tab: as_tab,
                 before,
                 container,
             } => {
-                let parent = pick_optional(&ids, *parent);
+                let parent = pick_parent(tree, *any_parent, *parent);
                 let container = container_for(tree, containers, parent, *container);
                 let kind = if *as_tab || parent_is_split(tree, parent) {
                     NodeKind::Tab
@@ -1324,31 +1417,36 @@ mod tests {
                 let prepared_before_renumber = tree.clone();
                 let Ok(position) = position_with_renumber(tree, container, parent, before) else {
                     prop_assert!(*tree == prepared_before_renumber);
-                    return Ok(());
+                    return Ok(None);
                 };
                 let prepared = tree.clone();
                 let new_node = node(NodeId::new(), container, parent, kind, position.as_str());
                 let new_id = new_node.id;
                 match tree.insert(new_node) {
                     Ok(()) => {
-                        check_ok(tree, &prepared, &BTreeSet::from([new_id]), &BTreeSet::new())?
+                        check_ok(tree, &prepared, &BTreeSet::from([new_id]), &BTreeSet::new())?;
+                        Ok(Some(Kind::Insert))
                     }
-                    Err(_) => prop_assert!(*tree == prepared),
+                    Err(_) => {
+                        prop_assert!(*tree == prepared);
+                        Ok(None)
+                    }
                 }
             }
             Step::InsertSplit {
                 parent,
+                any_parent,
                 before,
                 container,
                 tabs,
             } => {
-                let parent = pick_optional(&ids, *parent);
+                let parent = pick_parent(tree, *any_parent, *parent);
                 let container = container_for(tree, containers, parent, *container);
                 let before = pick_optional(&siblings_of(tree, container, parent), *before);
                 let prepared_before_renumber = tree.clone();
                 let Ok(position) = position_with_renumber(tree, container, parent, before) else {
                     prop_assert!(*tree == prepared_before_renumber);
-                    return Ok(());
+                    return Ok(None);
                 };
                 let prepared = tree.clone();
                 let split_node = node(
@@ -1375,26 +1473,33 @@ mod tests {
                     .chain(tab_nodes.iter().map(|tab_node| tab_node.id))
                     .collect();
                 match tree.insert_split(split_node, tab_nodes) {
-                    Ok(()) => check_ok(tree, &prepared, &added, &BTreeSet::new())?,
-                    Err(_) => prop_assert!(*tree == prepared),
+                    Ok(()) => {
+                        check_ok(tree, &prepared, &added, &BTreeSet::new())?;
+                        Ok(Some(Kind::InsertSplit))
+                    }
+                    Err(_) => {
+                        prop_assert!(*tree == prepared);
+                        Ok(None)
+                    }
                 }
             }
             Step::Move {
                 node: node_pick,
                 parent,
+                any_parent,
                 before,
                 container,
             } => {
                 let Some(moving) = pick_required(&ids, *node_pick) else {
-                    return Ok(());
+                    return Ok(None);
                 };
-                let parent = pick_optional(&ids, *parent);
+                let parent = pick_parent(tree, *any_parent, *parent);
                 let container = container_for(tree, containers, parent, *container);
                 let before = pick_optional(&siblings_of(tree, container, parent), *before);
                 let prepared_before_renumber = tree.clone();
                 let Ok(position) = position_with_renumber(tree, container, parent, before) else {
                     prop_assert!(*tree == prepared_before_renumber);
-                    return Ok(());
+                    return Ok(None);
                 };
                 let prepared = tree.clone();
                 let subtree = subtree_of(&prepared, moving);
@@ -1427,13 +1532,17 @@ mod tests {
                             tree.get(moving).map(|node| node.position.clone()),
                             Some(position)
                         );
+                        Ok(Some(Kind::Move))
                     }
-                    Err(_) => prop_assert!(*tree == prepared),
+                    Err(_) => {
+                        prop_assert!(*tree == prepared);
+                        Ok(None)
+                    }
                 }
             }
             Step::Remove { node: node_pick } => {
                 let Some(target) = pick_required(&ids, *node_pick) else {
-                    return Ok(());
+                    return Ok(None);
                 };
                 let prepared = tree.clone();
                 let subtree = subtree_of(&prepared, target);
@@ -1444,12 +1553,75 @@ mod tests {
                         prop_assert_eq!(removed_ids.clone(), subtree);
                         prop_assert_eq!(removed.first().map(|node| node.id), Some(target));
                         check_ok(tree, &prepared, &BTreeSet::new(), &removed_ids)?;
+                        Ok(Some(Kind::Remove))
                     }
-                    Err(_) => prop_assert!(*tree == prepared),
+                    Err(_) => {
+                        prop_assert!(*tree == prepared);
+                        Ok(None)
+                    }
                 }
             }
+            Step::Update {
+                node: node_pick,
+                title,
+                container,
+            } => {
+                let Some(target) = pick_required(&ids, *node_pick) else {
+                    return Ok(None);
+                };
+                let prepared = tree.clone();
+                let Some(stored) = prepared.get(target).cloned() else {
+                    return Ok(None);
+                };
+                // The edit also tries to change structure, which `update` must ignore.
+                let mut edited = stored.clone();
+                edited.title = format!("title {title}");
+                edited.is_unread = !stored.is_unread;
+                edited.container_id = pick_container(containers, *container);
+                edited.parent_id = None;
+                tree.update(edited.clone())
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                let after = tree
+                    .get(target)
+                    .cloned()
+                    .ok_or_else(|| TestCaseError::fail("updated node is missing"))?;
+                prop_assert_eq!(after.title, edited.title);
+                prop_assert_eq!(after.is_unread, edited.is_unread);
+                prop_assert_eq!(after.container_id, stored.container_id);
+                prop_assert_eq!(after.parent_id, stored.parent_id);
+                prop_assert_eq!(after.position, stored.position);
+                prop_assert_eq!(after.kind, stored.kind);
+                check_ok(tree, &prepared, &BTreeSet::new(), &BTreeSet::new())?;
+                Ok(Some(Kind::Update))
+            }
+            Step::Renumber {
+                parent,
+                any_parent,
+                container,
+            } => {
+                let parent = pick_parent(tree, *any_parent, *parent);
+                let container = container_for(tree, containers, parent, *container);
+                let siblings = siblings_of(tree, container, parent);
+                let prepared = tree.clone();
+                let changed: BTreeSet<NodeId> = tree
+                    .renumber_children(container, parent)
+                    .into_iter()
+                    .collect();
+                let moved: BTreeSet<NodeId> = siblings
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        prepared.get(*id).map(|node| &node.position)
+                            != tree.get(*id).map(|node| &node.position)
+                    })
+                    .collect();
+                prop_assert_eq!(changed, moved);
+                prop_assert_eq!(siblings_of(tree, container, parent), siblings.clone());
+                check_ok(tree, &prepared, &BTreeSet::new(), &BTreeSet::new())?;
+                // Renumbering one or zero siblings changes nothing, so it does not count.
+                Ok((siblings.len() >= 2).then_some(Kind::Renumber))
+            }
         }
-        Ok(())
     }
 
     proptest! {
@@ -1465,5 +1637,160 @@ mod tests {
                 apply(&mut tree, &containers, step)?;
             }
         }
+    }
+
+    /// Runs a fixed set of generated sequences and checks that the generator produces legal steps
+    /// of every kind often enough for the random tests to mean something. A correct implementation
+    /// meets the thresholds; one that rejects nearly everything does not.
+    #[test]
+    fn generated_steps_succeed_often_enough() {
+        let attempts: RefCell<BTreeMap<Kind, usize>> = RefCell::new(BTreeMap::new());
+        let successes: RefCell<BTreeMap<Kind, usize>> = RefCell::new(BTreeMap::new());
+        let config = Config {
+            cases: 256,
+            rng_seed: RngSeed::Fixed(7),
+            failure_persistence: None,
+            ..Config::default()
+        };
+        TestRunner::new(config)
+            .run(&prop::collection::vec(step(), 1..40), |steps| {
+                let (containers, mut tree) = seeded();
+                for step in &steps {
+                    *attempts.borrow_mut().entry(step.kind()).or_insert(0) += 1;
+                    if let Some(kind) = apply(&mut tree, &containers, step)? {
+                        *successes.borrow_mut().entry(kind).or_insert(0) += 1;
+                    }
+                }
+                Ok(())
+            })
+            .unwrap();
+        let attempts = attempts.into_inner();
+        let successes = successes.into_inner();
+        for kind in [
+            Kind::Insert,
+            Kind::InsertSplit,
+            Kind::Move,
+            Kind::Remove,
+            Kind::Update,
+            Kind::Renumber,
+        ] {
+            let attempted = attempts.get(&kind).copied().unwrap_or(0);
+            let succeeded = successes.get(&kind).copied().unwrap_or(0);
+            assert!(attempted > 0, "{kind:?} was never generated");
+            assert!(
+                succeeded * 100 >= attempted * MIN_SUCCESS_PERCENT,
+                "{kind:?}: only {succeeded} of {attempted} succeeded"
+            );
+        }
+    }
+
+    /// Minimum share of generated steps of each kind that must succeed.
+    const MIN_SUCCESS_PERCENT: usize = 30;
+
+    // Deterministic known-legal operations, one per kind. Each runs through `apply` on a tree
+    // where every pick resolves to the intended target.
+
+    fn one_tab_tree() -> (Vec<ContainerId>, TreeState, NodeId) {
+        let containers = containers3();
+        let t = tab(containers[0], None, "V");
+        let id = t.id;
+        (containers, tree_of(vec![t]), id)
+    }
+
+    #[test]
+    fn known_legal_insert_step_succeeds() {
+        let containers = containers3();
+        let mut tree = TreeState::new();
+        let step = Step::Insert {
+            parent: 0,
+            any_parent: false,
+            tab: true,
+            before: 0,
+            container: 0,
+        };
+        assert_eq!(
+            apply(&mut tree, &containers, &step).unwrap(),
+            Some(Kind::Insert)
+        );
+        assert_eq!(tree.len(), 1);
+    }
+
+    #[test]
+    fn known_legal_insert_split_step_succeeds() {
+        let containers = containers3();
+        let mut tree = TreeState::new();
+        let step = Step::InsertSplit {
+            parent: 0,
+            any_parent: false,
+            before: 0,
+            container: 0,
+            tabs: 2,
+        };
+        assert_eq!(
+            apply(&mut tree, &containers, &step).unwrap(),
+            Some(Kind::InsertSplit)
+        );
+        assert_eq!(tree.len(), 3);
+        tree.validate().unwrap();
+    }
+
+    #[test]
+    fn known_legal_move_step_succeeds() {
+        let (containers, mut tree, id) = one_tab_tree();
+        let step = Step::Move {
+            node: 0,
+            parent: 0,
+            any_parent: false,
+            before: 0,
+            container: 1,
+        };
+        assert_eq!(
+            apply(&mut tree, &containers, &step).unwrap(),
+            Some(Kind::Move)
+        );
+        assert_eq!(tree.get(id).unwrap().container_id, containers[1]);
+    }
+
+    #[test]
+    fn known_legal_remove_step_succeeds() {
+        let (containers, mut tree, _) = one_tab_tree();
+        let step = Step::Remove { node: 0 };
+        assert_eq!(
+            apply(&mut tree, &containers, &step).unwrap(),
+            Some(Kind::Remove)
+        );
+        assert!(tree.is_empty());
+    }
+
+    #[test]
+    fn known_legal_update_step_succeeds() {
+        let (containers, mut tree, id) = one_tab_tree();
+        let step = Step::Update {
+            node: 0,
+            title: 1,
+            container: 2,
+        };
+        assert_eq!(
+            apply(&mut tree, &containers, &step).unwrap(),
+            Some(Kind::Update)
+        );
+        assert_eq!(tree.get(id).unwrap().title, "title 1");
+    }
+
+    #[test]
+    fn known_legal_renumber_step_succeeds() {
+        let containers = containers3();
+        let tabs = vec![tab(containers[0], None, "V"), tab(containers[0], None, "W")];
+        let mut tree = tree_of(tabs);
+        let step = Step::Renumber {
+            parent: 0,
+            any_parent: false,
+            container: 0,
+        };
+        assert_eq!(
+            apply(&mut tree, &containers, &step).unwrap(),
+            Some(Kind::Renumber)
+        );
+        tree.validate().unwrap();
     }
 }
