@@ -1,0 +1,37 @@
+[package]
+name = "yaac-cef"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[features]
+# The UI compiled into release builds (ui/dist). Release only; see assets.rs.
+embed-ui = ["dep:rust-embed"]
+# Test-only entry points (a trusted click) and directory-backed UI assets in release builds.
+dev-tools = []
+
+[dependencies]
+# Pinned to the cef-rs release that binds CEF 154.0.34. Do not mix with CEF 156 binaries.
+cef = "=154.5.0"
+rust-embed = { version = "8", optional = true }
+libc = "0.2"
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+yaac-model.workspace = true
+yaac-api.workspace = true
+yaac-engine.workspace = true
+yaac-platform.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.3"
+objc2-foundation = "0.3.2"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "NSApplication",
+    "NSEvent",
+    "NSResponder",
+    "NSWindow",
+    "NSView",
+] }

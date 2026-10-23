@@ -1,0 +1,21 @@
+[package]
+name = "yaac-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rusqlite.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+yaac-model.workspace = true
+yaac-core.workspace = true
+
+[dev-dependencies]
+yaac-core = { workspace = true, features = ["testing"] }
+yaac-api.workspace = true
+yaac-engine.workspace = true
+tempfile = "3"
+tokio.workspace = true

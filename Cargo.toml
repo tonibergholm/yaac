@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# Crates that pull in CEF are built explicitly (`cargo build -p yaac-app`), not by a bare `cargo check`.
+default-members = [
+    "crates/yaac-model",
+    "crates/yaac-api",
+    "crates/yaac-engine",
+    "crates/yaac-platform",
+    "crates/yaac-core",
+    "crates/yaac-store",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+rust-version = "1.90"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v7", "serde"] }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"] }
+tracing = "0.1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+ts-rs = "12"
+proptest = "1"
+
+yaac-model = { path = "crates/yaac-model" }
+yaac-api = { path = "crates/yaac-api" }
+yaac-engine = { path = "crates/yaac-engine" }
+yaac-platform = { path = "crates/yaac-platform" }
+yaac-core = { path = "crates/yaac-core" }
+yaac-store = { path = "crates/yaac-store" }

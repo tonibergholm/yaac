@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>sidebar-probe</title>
+<script>
+  // Loaded into the sidebar view by the harness, once per attempt (`?kind=...`). Each attempt tries
+  // to take the UI browser away from app://ui/. The engine must refuse it: the page stays here and
+  // reports through its title, which is the only channel the UI uses (no network from the UI).
+  var kind = new URLSearchParams(location.search).get('kind') || 'none';
+  var target = 'http://127.0.0.1/forbidden';
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  (async function () {
+    document.title = 'sb-attempt ' + kind;
+    if (kind === 'location-http') location.href = target;
+    if (kind === 'window-open-http') window.open(target);
+    if (kind === 'iframe-http') { var f = document.createElement('iframe'); f.src = target; document.body.appendChild(f); }
+    if (kind === 'anchor-blank') { var a = document.createElement('a'); a.href = target; a.target = '_blank'; document.body.appendChild(a); a.click(); }
+    if (kind === 'location-data') location.href = 'data:text/html,<p>x</p>';
+    if (kind === 'location-javascript') location.href = 'javascript:void(0)';
+    await sleep(600);
+    document.title = 'sb-done ' + kind;
+  })();
+</script>

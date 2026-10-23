@@ -1,0 +1,19 @@
+[package]
+name = "yaac-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[features]
+ts = ["dep:ts-rs", "yaac-model/ts"]
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+yaac-model.workspace = true
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true
