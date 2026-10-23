@@ -63,13 +63,13 @@ crates/
   yaac-api        Wire types shared by UI, CLI and MCP: Command, Query, Event, errors.
                   Generates the TypeScript types for the UI (design: ts-rs or specta).
   yaac-engine     Traits that describe what the core needs from a browser engine:
-                  EngineHost, BrowserHandle, PageDriver. Includes FakeEngine for tests.
+                  EngineHandle, EngineEvent, PageDriver. Includes FakeEngine for tests.
   yaac-platform   Platform traits (section 5). macos/ and linux/ modules behind cfg.
-  yaac-store      SQLite persistence: schema, migrations, Store implementation.
+  yaac-store      SQLite persistence: schema, migrations, implements the `Store` trait defined in yaac-core (so it depends on model and core).
   yaac-net        Registry of allowed outbound network calls and the check that enforces it.
   yaac-core       State actor, command dispatch, policy and grants, undo, events.
-                  Depends on model, api, engine (traits), platform (traits), store (trait).
-  yaac-agent      Local socket server, enrollment, scopes, audit log, snapshot shaping.
+                  Depends on model, api, engine (traits) and platform (traits). Defines the `Store` trait (the port) that yaac-store implements.
+  yaac-agent      Local socket server, enrollment, scopes, audit log, snapshot shaping, and the ticket executor.
   yaac-import     Importers: Arc, Chromium family, Firefox, Safari.
   yaac-cef        Implements yaac-engine on cef-rs. The only crate that names CEF types.
   yaac-app        The app binary. Wires everything and owns the main thread.
@@ -99,7 +99,7 @@ Design:
 
 - **Main thread**: CEF message loop, window and view code. It runs only engine and platform work. It never blocks on the core.
 - **Core thread(s)**: a Tokio runtime. The state actor owns all mutable state and processes one message at a time. This gives one writer and a total order of commands, which makes undo, audit and agent grants simple to reason about.
-- **Store thread**: a dedicated blocking thread for SQLite. The actor sends write batches and awaits completion. Reads for the UI come from the in-memory state, not from SQLite.
+- **Store thread**: a dedicated blocking thread for SQLite. The actor sends write batches to it through a queue. Commands that must be durable before their engine effects (commit-before-effect) wait for the commit event; grant revocation and the kill switch are applied in memory first and persisted after, so a stop never waits behind an fsync. Reads for the UI come from the in-memory state, not from SQLite.
 - **Bridges**: `EngineHandle` is a `Send + Sync` command proxy. It carries owned ids and plain data, never CEF objects, and posts work to the CEF UI thread (`post_task`). CEF objects stay on the UI thread. Engine callbacks (title changed, load finished, close completed, new window requested) become `EngineEvent` values sent to the actor over a channel.
 - **Split-phase rule**: the actor never awaits the engine or a confirmation. It issues a command, records a pending operation and continues; the result arrives later as an event. Long page operations and confirmations therefore cannot stall a stop or revoke message.
 - **Main-thread platform calls**: platform services that need the main thread (menus, open panels, notifications) are reached through the same proxy. The `Platform` methods below are async from the core's side and are marshalled to the main thread by the host.
@@ -123,6 +123,8 @@ trait Platform: Send + Sync {
     fn lifecycle(&self) -> &dyn Lifecycle;          // activate, quit, dock/tray, window decorations hint
 }
 ```
+
+The sketch above is abbreviated: methods that need the main thread are `async` in the real trait (boxed futures). The macOS and Linux implementations reach the main thread through a small `MainThread` trait defined in `yaac-platform` (`fn run(&self, job: Box<dyn FnOnce() + Send>)`). The host injects its implementation, backed by CEF's `post_task` in `yaac-cef`, so `yaac-platform` never depends on `cef`.
 
 Per target:
 
@@ -153,7 +155,7 @@ trait EngineHandle: Send + Sync {
     fn reload(&self, view: ViewId); fn back(&self, view: ViewId); fn forward(&self, view: ViewId);
     fn show(&self, view: ViewId);                                           // swap the visible content view
     fn close(&self, view: ViewId);                                          // result arrives as EngineEvent::Closed
-    fn page(&self, view: ViewId) -> Option<Arc<dyn PageDriver>>;            // content views only
+    fn page(&self, view: ViewId) -> Option<Arc<dyn PageDriver>>;            // content views only; answered from ids the core allocated, None otherwise
 }
 // Engine -> core, over a channel. Carries a navigation generation so stale callbacks can be ignored.
 enum EngineEvent { Created{..}, Navigated{view, nav_gen, url}, TitleChanged{view, nav_gen, title},
@@ -195,7 +197,7 @@ enum Command { OpenTab{..}, CloseTab{..}, MoveNode{..}, SelectTab{..}, PinTab{..
 enum Principal { Ui{view: ViewId}, Agent{client: ClientId}, Import{job: JobId, on_behalf_of: Box<Principal>}, System }
 ```
 
-**Authority is never taken from the request.** The wire format carries no actor field. Each ingress builds the `Principal` itself: the `app://ui` scheme handler from a UI view id the core created, the socket server from an enrolled token, an import job from the principal that started it. A table in `yaac-core` maps each `Principal` kind to the commands it may issue. `Agent` principals cannot issue `GrantAgent`, `RevokeAgent`, `SetSetting`, enrollment approval or anything that edits policy; only `Ui` principals can, and only from a UI view. An import job keeps the starting principal and its destination restrictions; it does not acquire authority of its own.
+**Authority is never taken from the request.** The wire format carries no actor field. Each ingress builds the `Principal` itself: the `app://ui` scheme handler from a UI view id the core created, the socket server from an enrolled token, an import job from the principal that started it. A table in `yaac-core` maps each `Principal` kind to the commands it may issue. `Agent` principals cannot issue `GrantAgent`, `SetSetting`, enrollment approval or anything that raises authority or edits policy; only `Ui` principals can, and only from the main frame of a registered UI browser. The one exception runs the other way: a command that only reduces authority (revoking the caller's own grants, cancelling its own tickets) is allowed to the caller. An import job keeps the starting principal and its destination restrictions; it does not acquire authority of its own.
 
 The actor handles a request in four steps: **authorize** (principal, grants), **validate**, **apply** (mutate state, produce engine effects and store writes), **emit** events.
 
@@ -217,9 +219,9 @@ Arc's sidebar data, as recorded in the project brief from an earlier session (no
 
 Concepts:
 
-- **Profile**: an isolated browsing identity. One CEF request context and cache path (cookies, storage). Kinds: `default`, `user`, `agent`. Design; isolation between contexts is **open** (A7) and gates both profiles and agent grants.
-- **Space**: a named, themed group of tabs belonging to one profile. Many Spaces can share a `default` or `user` profile; those Spaces are organizational boundaries only and share cookies and sessions. A Space has three containers: `pinned`, `today` (unpinned) and `archive`.
-- **Agent Spaces**: a Space an agent can be granted must belong to an `agent` profile that no other Space uses. The core rejects a grant on any other Space, and in particular on the `default` profile. Giving an agent a logged-in identity means signing in inside that agent profile. This keeps the per-Space cookie toggle meaningful, because a Space's cookies are the profile's cookies.
+- **Profile**: an isolated browsing identity. One CEF request context and cache path (cookies, storage). Kinds: `default` and `standard`. Design; isolation between contexts is **open** (A7) and gates both profiles and agent grants.
+- **Space**: a named, themed group of tabs belonging to one profile. Many Spaces can share a profile; Spaces that share one are organizational boundaries only and share cookies and sessions. A Space has three containers: `pinned`, `today` (unpinned) and `archive`.
+- **Agent Spaces**: an agent can be granted a Space only if the user marked it `agent_enabled` and it is the only Space of a non-default profile. The core refuses to mark a Space that shares its profile with another Space or that uses the `default` profile, and the UI explains that the user must move it to its own profile (which means signing in there again). Giving an agent a logged-in identity means signing in inside that profile. This keeps the per-Space cookie toggle meaningful, because a Space's cookies are the profile's cookies.
 - **Favorites**: a per-profile container above the Spaces, shared by all Spaces of that profile.
 - **Node**: an element in a container's tree. Kinds: `tab`, `folder`, `split` (a group of two to four tabs shown together), `note` later. Folders and splits can nest in folders.
 - **Tab lifecycle**: persisted state is `suspended` (no browser; url, title, favicon and scroll kept). `live` (has a browser) is runtime-only and never stored. A tab is archived by moving its node to the `archive` container, which is the single record of that fact.
@@ -229,10 +231,11 @@ Concepts:
 SQLite (via `rusqlite`, bundled, WAL, one writer). Sketch, not final:
 
 ```sql
-CREATE TABLE profile (id TEXT PRIMARY KEY, kind TEXT CHECK (kind IN ('default','user','agent')),
+CREATE TABLE profile (id TEXT PRIMARY KEY, kind TEXT CHECK (kind IN ('default','standard')),
                       name TEXT, cache_dir TEXT, created_at INTEGER);
 CREATE TABLE space   (id TEXT PRIMARY KEY, profile_id TEXT REFERENCES profile(id),
-                      name TEXT, theme TEXT, position TEXT);        -- agent grantability is derived: profile.kind = 'agent'
+                      name TEXT, theme TEXT, position TEXT,
+                      agent_enabled INTEGER DEFAULT 0);   -- user-set; the core allows it only for the sole Space of a non-default profile
 CREATE TABLE container (id TEXT PRIMARY KEY, profile_id TEXT REFERENCES profile(id),
                         space_id TEXT REFERENCES space(id),        -- NULL for favorites
                         kind TEXT CHECK (kind IN ('favorites','pinned','today','archive')));
@@ -253,12 +256,13 @@ CREATE TABLE boost   (id TEXT PRIMARY KEY, profile_id TEXT, origin TEXT, css TEX
 CREATE TABLE setting (scope TEXT, scope_id TEXT, key TEXT, value TEXT, PRIMARY KEY (scope, scope_id, key));
 CREATE TABLE agent_client(id TEXT PRIMARY KEY, name TEXT, token_hash TEXT, created_at INTEGER, revoked_at INTEGER);
 CREATE TABLE agent_grant (client_id TEXT, space_id TEXT, scopes TEXT, origins TEXT, generation INTEGER, expires_at INTEGER);
+CREATE TABLE session (window_id TEXT PRIMARY KEY, space_id TEXT, selected_node_id TEXT, sidebar_width INTEGER);  -- restored on start
 CREATE TABLE audit_log (id INTEGER PRIMARY KEY, request_id TEXT, phase TEXT,   -- started | denied | cancelled | completed | interrupted
                         ts INTEGER, client_id TEXT, space_id TEXT, tool TEXT,
                         scope TEXT, origin TEXT, result TEXT, duration_ms INTEGER);
 ```
 
-Tree invariants (enforced in `yaac-model`, checked again by the store): a node's profile and Space are derived from its container, so a node cannot disagree with its owner. No cycles. A `split` has two to four `tab` children and nothing else. Moving a node moves its subtree in one transaction and touches only the moved root's `parent_id` and `position`. A move across containers in the same profile is allowed and recreates no browsers. A move across profiles is **not allowed in v1**, because a live browser keeps the old profile's session; it would need a close-and-recreate. Sibling order uses fractional indexing so an ordinary move touches one row. Keys are base-62 strings, ties are broken by `id`, and the siblings of a parent are renumbered when a key grows past 32 characters. Deletion tombstones and concurrent-insert conflicts belong to the sync design, which is deferred.
+Tree invariants (enforced in `yaac-model`, checked again by the store): a node's profile and Space are derived from its container, so a node cannot disagree with its owner. No cycles. A `split` has two to four `tab` children and nothing else. A child's `container_id` equals its parent's, and a container's `profile_id` equals its Space's `profile_id`; the model and the store both check this. Moving a node moves its subtree in one transaction: it rewrites the root's `parent_id` and `position` and, for a move across containers, `container_id` on every descendant. A move across containers in the same profile is allowed and recreates no browsers. A move across profiles is **not allowed in v1**, because a live browser keeps the old profile's session; it would need a close-and-recreate. Sibling order uses fractional indexing so an ordinary move touches one row. Keys are base-62 strings, ties are broken by `id`, and the siblings of a parent are renumbered when a key grows past 32 characters. Deletion tombstones and concurrent-insert conflicts belong to the sync design, which is deferred.
 
 Notes: `rev` and `origin_device` are reserved columns only. Migrations are numbered SQL files applied in one transaction and recorded in `PRAGMA user_version`. Browsing history (`visit`) is our own table, fed from engine events and keyed by navigation id, because CEF exposes no history API for the omnibox. Reloads and redirects update one visit; the exact dedup rules are a skeleton-time decision. The audit log is append-only as an application guarantee only; a same-user process can still edit the file. Page content is never stored. The audit log never stores typed values or page text.
 
@@ -271,16 +275,16 @@ The UI is TypeScript, built to static files and served from the custom scheme `a
 - UI to core: `fetch('app://ui/api/v1/rpc', { method: 'POST', body: JSON })`. The scheme handler decodes a `Request`, sends it to the actor and returns the `Response`. Observed in the prototype: the sidebar's `fetch()` calls (GET) reached the handler, and Rust called `load_url` on the content frame. POST bodies are untested.
 - Core to UI: events are pushed with `execute_java_script('window.yaacEvent({...})')` and carry only `{topic, rev}`. The UI then pulls with `Query::Since(rev)`.
 - The wire format is JSON, versioned with `v` in every request. Rust types in `yaac-api` are the source of truth. The TypeScript types are generated from them.
-- `CefMessageRouter` is bound in cef-rs but unexercised in its repo (sourced). It is the fallback if the scheme path hits a limit. The UI bridge sits behind a `UiBridge` trait, so the choice stays local to `yaac-cef`.
+- `CefMessageRouter` is bound in cef-rs (sourced); that it is unexercised in the cef-rs repo is inferred from absence (note 02, section 4.2). It is the fallback if the scheme path hits a limit. The UI bridge sits behind a `UiBridge` trait, so the choice stays local to `yaac-cef`.
 
-**Authorization of UI calls.** The scheme handler authenticates the caller by the browser id of a view the core created for the UI, not by the frame's URL. A call from any other browser is rejected. The handler fails closed: if it cannot attribute a request to a UI browser, it refuses. Content browsers cannot reach UI pages: `on_before_browse` refuses `app://` navigations in content browsers and popups, and content views get no bridge. UI pages render untrusted text (page titles, URLs), so they ship with a strict CSP and escape that text. Observed in the prototype: a `fetch()` GET from the content view to a sidebar-only endpoint returned 403. That test used a local `app://` page as content, and it used GET only. POST with a JSON body, remote `https` pages, embedded frames and navigation races are untested and **open** (experiment E-IPC-1: from a remote page, attempt `fetch` and `XMLHttpRequest` to `app://ui/api/v1/rpc`, with and without CORS, from the page and from a child frame, and attempt to navigate a content browser to `app://ui`).
+**Authorization of UI calls.** The scheme handler authenticates the caller by the browser id of a view the core created for the UI, not by the frame's URL. A call from any other browser is rejected. The handler fails closed: if it cannot attribute a request to a UI browser, it refuses. UI browsers stay on UI pages: `on_before_browse` in a UI browser refuses any navigation away from `app://ui/`, UI pages ship with `frame-src 'none'` so they host no subframes, and a link to a page the UI renders is opened through a command (`OpenTab`), never by navigating the UI browser. Policy-editing commands (`GrantAgent`, `SetSetting` on privacy keys, enrollment approval, revoking another client's grants) are accepted only from the main frame of a registered UI browser at an `app://ui/` URL. Content browsers cannot reach UI pages: `on_before_browse` refuses `app://` navigations in content browsers and popups, and content views get no bridge. UI pages render untrusted text (page titles, URLs), so they ship with a strict CSP and escape that text. Observed in the prototype: a `fetch()` GET from the content view to a sidebar-only endpoint returned 403. That test used a local `app://` page as content, and it used GET only. POST with a JSON body, remote `https` pages, embedded frames and navigation races are untested and **open** (experiment E-IPC-1: from a remote page, attempt `fetch` and `XMLHttpRequest` to `app://ui/api/v1/rpc`, with and without CORS, from the page and from a child frame, and attempt to navigate a content browser to `app://ui`).
 
 ## 9. Windows, views and tab lifecycle
 
 - One `CefWindow` per browser window. A root panel with a horizontal box layout holds the sidebar view (fixed width, collapsible) and the content area (observed).
 - Each `live` tab is a CEF browser in a `BrowserView`. Only the selected tab's view is visible. Switching tabs swaps the visible view. The core keeps the node-to-browser map.
 - Suspending a tab destroys its browser and keeps the node. Restoring creates a new browser and loads the saved url. Memory limits and the suspend policy are tuning work after the skeleton.
-- Split view, Peek and Little Arc are later features. The model supports them: `split` is a node kind, and Peek and Little Arc are extra windows or overlay views created through `EngineHost`.
+- Split view, Peek and Little Arc are later features. The model supports them: `split` is a node kind, and Peek and Little Arc are extra windows or overlay views created through `EngineHandle`.
 - Popups: `on_before_popup` must answer synchronously on the CEF thread without waiting for the actor. It denies the popup and emits `PopupRequested{opener, url, user_gesture}`. The core then decides and, if allowed, opens a new tab node in the same Space through a command (design; the prototype denies popups and does nothing more). The cost is that the new tab has no `window.opener`, which breaks some sign-in flows. How to handle those is **open**.
 - Swapping the visible content view when the user switches tabs was not tested in the prototype (it had one content view). It is part of the M1 acceptance criteria (section 15).
 
@@ -309,34 +313,34 @@ Extensions: uBlock Origin MV2 as a built-in component with a patch that keeps th
 
 Decisions in `docs/decisions.md` (2026-10-23): no built-in AI; agents get a CLI and an MCP server; token efficiency and safe defaults are requirements; `evaluate` ships behind confirmation; agents act only in Spaces created or marked for agents; confirmation only for sensitive actions; cookies off by default with a per-Space toggle; schema public and versioned; Windows transport deferred.
 
-**Shape.** `yaac-agent` runs inside the app process and exposes the core API to external clients over a Unix domain socket. `yaac <cmd>` and `yaac mcp` are thin clients of that socket. Requests arrive as `Actor::Cli` or `Actor::Mcp` and pass through the same authorize step as the UI.
+**Shape.** `yaac-agent` runs inside the app process and exposes the core API to external clients over a Unix domain socket. `yaac <cmd>` and `yaac mcp` are thin clients of that socket. Each connection becomes a `Principal::Agent` from its enrolled token and passes through the same authorize step as the UI. The ticket executor lives in `yaac-agent`; the actor hands it a ticket that includes the `PageDriver` for exactly one view.
 
 **Transport and enrollment (R1, R2).**
-- Socket in a per-user runtime directory, mode 0700, socket 0600. The server checks the peer uid on each connection (`getpeereid` on macOS, `SO_PEERCRED` on Linux). No TCP listener, not even on loopback. Aside's daemon listens on a loopback TCP port whose `/` and `/health` routes answered without credentials; whether its other routes need a token is unknown (observed in `docs/research/06-aside-observed.md`, section 5). Any local process can reach such a port, which is the design we avoid.
+- Socket in a per-user runtime directory, mode 0700, socket 0600. The server checks the peer uid on each connection (`getpeereid` on macOS, `SO_PEERCRED` on Linux). No TCP listener, not even on loopback. Aside's daemon listens on a loopback TCP port whose `/` and `/health` routes answered without credentials; whether its other routes need a token is unknown (observed in `docs/research/06-aside-observed.md`, section 4). Any local process can reach such a port, which is the design we avoid.
 - A client enrolls once. The user approves it in the app (a confirmation page rendered by the trusted UI). The client receives a grant token stored in a 0600 file. Tokens are revocable and short-lived, and renew only while the grant stands.
 - A same-user process holding a token can drive the granted Space. Socket permissions do not stop same-user malware. This limit is stated, not hidden.
 
-**Grants and scopes (R3, R4, R13).** A grant is (client, Space, scopes, expiry). A Space maps to one profile. The default agent Space is dedicated. A Space with logged-in state is reachable only through an explicit grant on a Space marked `agent_enabled`. Never the default profile. Scopes: `read` (list, snapshot, text, screenshot, console), `act` (navigate, click, fill, type, press, select), `privileged` (`evaluate`, `download`), and `cookies` (a separate scope, off by default, enabled per Space in settings; cookie values never go to MCP output). A grant also carries `origins`: `any` (the default for a dedicated agent profile) or an allow-list of origins and schemes. Only `http` and `https` are navigable by agents; `file:`, `app:`, `chrome:` and DevTools URLs are refused. With an allow-list, navigation, redirects and subresource egress are checked below the tool handlers, not inside them. This is what stops an injected instruction from reading private content and sending it to an attacker URL; confirmation alone does not, so the allow-list option exists for Spaces that hold logged-in sessions. Whether `any` should be the default, and how the sign-in case is handled, is an owner decision (section 15).
+**Grants and scopes (R3, R4, R13).** A grant is (client, Space, scopes, origins, generation, expiry). A Space maps to one profile, and a grantable Space is the only Space of a non-default profile (section 7). The default agent Space is a fresh one. A Space with logged-in state is reachable only through an explicit grant on a Space the user marked `agent_enabled`. Never the default profile. Scopes: `read` (list, snapshot, text, screenshot, console), `act` (navigate, click, fill, type, press, select), `privileged` (`evaluate`, `download`), and `cookies` (a separate scope, off by default, enabled per Space in settings; cookie values never go to MCP output). A grant also carries `origins`: `any` (the default for a dedicated agent profile) or an allow-list of origins and schemes. Only `http` and `https` are navigable by agents; `file:`, `app:`, `chrome:` and DevTools URLs are refused. With an allow-list, navigation, redirects and subresource egress are checked below the tool handlers, not inside them. This is what stops an injected instruction from reading private content and sending it to an attacker URL; confirmation alone does not, so the allow-list option exists for Spaces that hold logged-in sessions. Whether `any` should be the default, and how the sign-in case is handled, is an owner decision (section 15).
 
 **Confirmation (R5).** For ordinary actions, confirmation is required only for sensitive ones (the owner's decision): form fields for payment or credentials, account-settings pages, and origins on a user-managed list. `evaluate` and `download` ask each time, as decided with the `evaluate` answer. Confirmation is rendered by the trusted web UI, never by page content, and enforced in the core. The detector is conservative; its rules (field types and autocomplete tokens, URL patterns for account and payment pages, the origin list) are defined here and in `docs/agent-api.md` when the schema is written. A first action on a new origin does not prompt on its own.
 
-**Execution protocol.** Authorization happens in the actor, but execution does not. The actor checks the principal and grant, then issues a **ticket** bound to (principal, grant generation, tab and navigation generation, origin, exact action) and hands it to the executor, which runs off the actor. A confirmation is consumed once and is bound to the same tuple. The executor revalidates the ticket at dispatch, so a tab that navigated, changed Space or lost its grant while approval was pending fails closed. The kill switch bumps the grant generation, which invalidates every ticket and cancels queued effects; what already-running page JavaScript does after that is **open**. `yaac-agent` never calls `PageDriver` directly. Downloads need the same provenance: a download started by a click or keypress in an agent-driven tab (`DownloadRequested`) is treated as the `download` privilege and is denied unless that is confirmed.
+**Execution protocol.** Authorization happens in the actor, but execution does not. The actor checks the principal and grant, then issues a **ticket** bound to (principal, grant generation, tab and navigation generation, origin, exact action) and hands it to the executor, which runs off the actor. A confirmation is consumed once and is bound to the same tuple. The executor revalidates the ticket at dispatch (on the CEF UI thread, inside the `PageDriver` call, against the engine's own navigation generation, because the actor's copy can lag), so a tab that navigated, changed Space or lost its grant while approval was pending fails closed. The kill switch bumps the grant generation, which invalidates every ticket and cancels queued effects; what already-running page JavaScript does after that is **open**. `yaac-agent` never calls `PageDriver` directly. Downloads need the same provenance: a download started by a click or keypress in an agent-driven tab (`DownloadRequested`) is treated as the `download` privilege and is denied unless that is confirmed.
 
 **UI views are not agent targets.** A `PageDriver` is only handed out for content views in a granted Space. DevTools targets for UI views are never exposed, so an agent cannot drive its own confirmation page. Whether `Target.*` could reach UI views by accident (A1) must be ruled out by test.
 
-**Tools (v1 target: 8 plus 2 privileged).** `tabs` (list, open, close, select, within the granted Space), `navigate` (url, back, forward, reload, optional wait), `snapshot`, `act`, `text`, `screenshot`, `console`, `wait`; privileged: `evaluate`, `download`. Descriptions are short and factual, with no policy prose, because policy is enforced by the core (Aside's four-tool schema is about 8.8 KB, mostly one tool's prose; observed). The schema is public and versioned from the first release.
+**Tools (v1 target: 8 plus 2 privileged).** `tabs` (list, open, close, select, within the granted Space), `navigate` (url, back, forward, reload, optional wait), `snapshot`, `act`, `text`, `screenshot`, `console`, `wait`; privileged: `evaluate`, `download`. Descriptions are short and factual, with no policy prose, because policy is enforced by the core (Aside's four-tool schema is about 8.8 KB in total, observed; that most of it is one tool's description is an inference in note 06's recommendations). The schema is public and versioned from the first release.
 
 **Page representation and token cost.** `snapshot` returns an indented accessibility tree with short refs (`e1`, `e2`), a `selector` scope, and a diff after actions when the previous snapshot used the same options. Defaults: output capped at 16 KiB, text inside a node capped with an explicit `[+N chars]` marker, and a `truncated: true` result with a cursor or a suggested narrower scope. Refs distinguish "not found" from "stale". Screenshots return a file path in the Space's artifact folder and are sent as an image only on request, resized. Measured baseline for the same pages (raw HTML against Aside's snapshot): example.com 577 B against 270 B, a GitHub repo page 245,228 B against 6,595 B, Wikipedia 415,391 B against the 16 KiB cap. Our targets are the same order of size. We verify with experiment A8 on our own output.
 
 **Page output is untrusted (R9).** Text from pages is wrapped in a labeled boundary and marked `untrusted: true`. This is a cue for the model, not a defense. The defense is architectural: grants, origin scope and confirmations in the core.
 
-**Visibility and control (R6 to R8).** Tabs an agent drives appear in a group for that Space. The Space shows "agent connected" while a grant is live. An append-only audit log records time, client, Space, tool, scope, origin, result and duration, never page text or typed values. A per-Space kill switch revokes every grant and cancels in-flight commands (`yaac agent stop` does the same from the CLI). Click-to-stop latency is not measured (**open**).
+**Visibility and control (R6 to R8).** Tabs an agent drives appear in a group for that Space. The Space shows "agent connected" while a grant is live. An append-only audit log records time, client, Space, tool, scope, origin, result and duration, never page text or typed values. A per-Space kill switch in the UI revokes every grant on that Space and cancels in-flight commands. From the socket, a command that only reduces authority is always allowed to an enrolled client: `yaac agent stop` revokes that client's own grants and cancels its tickets. A global stop is a UI action. Revocation only reduces authority, which is why an `Agent` principal may issue it for itself. Click-to-stop latency is not measured (**open**).
 
 **Limits (R12).** Maximum output size per response, a per-client rate limit, and a concurrency cap per Space. Errors carry no stack traces or internal paths (Aside's do; observed).
 
 **CLI behavior.** Unknown subcommands are errors. A failed script exits non-zero. Leaf `--help` prints leaf help. Values go to stdout and status to stderr, with no ANSI when piped. These are the defects observed in Aside's CLI.
 
-**What the cookie toggle authorizes.** It enables the `cookies` scope tools for that Space and nothing else. Ambient authenticated browsing (the agent using the profile's sessions by loading pages) follows from granting a Space that holds sessions, and arbitrary confirmed `evaluate` is a separate privilege. These are three different capabilities and the UI describes them separately.
+**What the cookie toggle authorizes.** It enables the `cookies` scope tools for that Space and nothing else. Ambient authenticated browsing (the agent using the profile's sessions by loading pages) follows from granting a Space that holds sessions, and arbitrary confirmed `evaluate` is a separate privilege. These are three different capabilities and the UI describes them separately. In v1 the `cookies` scope has no tool. The scope and the toggle exist so the decision is recorded and enforced when a cookie tool arrives. "Cookie access off" means no tool ever returns a cookie value; the agent still browses with the profile's sessions, because the profile is its identity. That is a reading of the owner's decision, flagged for confirmation.
 
 **Memory-type tools** that read personal data stay out of the browser server (Aside puts `memory_search` in the same MCP server; observed).
 
@@ -346,7 +350,7 @@ Settings are typed keys in `yaac-api` (name, type, default, scope: global, profi
 
 ## 13. Importers
 
-`yaac-import` reads from the source's files on disk, read-only, and emits `Command`s as `Actor::Importer`. The Arc importer reads sidebar data (spaces, pinned and today tabs, folders). Chromium-family importers read bookmarks, history and, with consent, passwords through the platform `SecretStore`. Firefox and Safari follow. The existing `ardia` fork's importers are a reference for what exists on disk; verify the license of each file before reusing code (the project brief says its own files are Apache-2.0 and the app GPL-3.0; that claim has no source in this repository, so check each file).
+`yaac-import` reads from the source's files on disk, read-only, and emits `Command`s under a `Principal::Import` that carries the principal who started the job. The Arc importer reads sidebar data (spaces, pinned and today tabs, folders). Chromium-family importers read bookmarks, history and, with consent, passwords through the platform `SecretStore`. Firefox and Safari follow. The existing `ardia` fork's importers are a reference for what exists on disk; verify the license of each file before reusing code (the project brief says its own files are Apache-2.0 and the app GPL-3.0; that claim has no source in this repository, so check each file).
 
 ## 14. Build, test and verification
 
@@ -364,11 +368,11 @@ Packaging: macOS app bundle with helper apps (observed layout). Linux: an Arch P
 
 **M0 (done).** Feasibility spikes and research.
 
-**M1: macOS walking skeleton.** Workspace, `yaac-model`, `yaac-store` (including profiles, Spaces and containers), `yaac-core` with FakeEngine tests, `yaac-cef` on cef-rs, a window with the sidebar and a tab tree, open, close and switch, persisted across restarts. On a stock prebuilt CEF run with `--disable-extensions` (the stock build otherwise loads external extensions; observed in E2). Acceptance includes three things the prototype never tested: swapping the visible content view on a tab switch, E-IPC-1 (a remote page cannot reach `app://ui/api`), and A7 (two request contexts isolate cookies and storage).
+**M1: macOS walking skeleton.** Workspace, `yaac-model`, `yaac-store` (including profiles, Spaces and containers), `yaac-core` with FakeEngine tests, `yaac-cef` on cef-rs, a window with the sidebar and a tab tree, open, close and switch, persisted across restarts. On a stock prebuilt CEF run with `--disable-extensions` (on Linux, stock CEF loaded an extension from `/usr/share/chromium/extensions/` in E2; the macOS equivalent is untested). Acceptance includes three things the prototype never tested: swapping the visible content view on a tab switch, E-IPC-1 (a remote page cannot reach `app://ui/api`), and A7 (two request contexts isolate cookies and storage).
 
 **M2: Linux skeleton on Omarchy.** Same skeleton on Wayland, `yaac-platform` Linux implementations, Arch package. Acceptance requires observed painting and input on Hyprland, not only a started process.
 
-**M3: agent interface alpha.** `yaac-agent`, `yaac` CLI and `yaac mcp`, `snapshot` and `act`, grants on `agent` profiles, tickets and confirmation, the audit log. Depends on A7 and on minimal profile and Space ownership from M1. Ahead of the command bar because it is needed daily. The richer Spaces and profiles UI waits for M4.
+**M3: agent interface alpha.** `yaac-agent`, `yaac` CLI and `yaac mcp`, `snapshot` and `act`, grants on dedicated-profile Spaces, tickets and confirmation, the audit log. Depends on A7 and on minimal profile and Space ownership from M1. Ahead of the command bar because it is needed daily. The richer Spaces and profiles UI waits for M4.
 
 **M4:** command bar, Spaces and profiles UI, auto-archive, the Arc importer, Boosts, split view.
 
@@ -392,7 +396,7 @@ Packaging: macOS app bundle with helper apps (observed layout). Linux: an Arch P
 | 12 | What happens to running page JavaScript after the kill switch? | Measure in M3 |
 | 13 | Does a `Target.*` or DevTools path ever reach UI views? | A1, with UI views in the target list |
 
-**Owner decisions needed** (recommendation in brackets): (a) Should `evaluate` and `download` confirm every time, with ordinary actions confirming only when sensitive? [yes, as written in section 11]. (b) Should the default grant allow `any` origin in a dedicated agent profile, or start with an allow-list? [`any` in an empty agent profile, allow-list recommended once the profile holds sign-ins]. (c) ts-rs or specta for TypeScript types? [ts-rs for M1].
+**Owner decisions (2026-10-23, all approved as recommended):** (a) `evaluate` and `download` confirm every time; ordinary actions confirm only when sensitive. (b) The default grant allows `any` origin in an empty dedicated profile; an allow-list is recommended once the profile holds sign-ins. (c) `ts-rs` generates the TypeScript types for M1. **Pending owner confirmation:** a grantable Space must be the only Space of its non-default profile (section 7), and "cookie access off" means no tool returns cookie values while the agent still browses with the profile's sessions (section 11).
 
 ## 16. Decisions to record after review
 
@@ -403,5 +407,5 @@ Packaging: macOS app bundle with helper apps (observed layout). Linux: an Arch P
 5. The `Platform` trait list and the rule that the core never names OS or CEF types.
 6. Agent interface scopes, transport and the limits listed in section 11.
 7. Authority comes from the ingress, never from the request; agents cannot edit policy.
-8. A grantable Space owns a dedicated `agent` profile; no cross-profile moves in v1.
+8. A grantable Space is the only Space of a non-default profile; no cross-profile moves in v1.
 9. Split-phase engine interface: the core allocates ids and results come back as events.
